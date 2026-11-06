@@ -1,0 +1,281 @@
+'use strict';
+(() => {
+  const $ = (sel, parent=document) => parent.querySelector(sel);
+  const $$ = (sel, parent=document) => [...parent.querySelectorAll(sel)];
+  const defaultSettings={engine:'shiro',systemProxy:true,autoStart:false,cdnIPs:'',sniNames:'',region:'',lanternTag:''};
+  let previewSettings={...defaultSettings};
+  try { previewSettings={...defaultSettings,...JSON.parse(localStorage.getItem('lml-preview-settings')||'{}')}; } catch {}
+  const platform=window.lml?.platform || (window.LMLNative ? 'android' : 'preview');
+  const demoSnapshot=()=>({platform:'preview',settings:{...previewSettings},shiro:{state:'preview',detail:'پیش‌نمایش؛ اتصال واقعی در مرورگر ممکن نیست.'},lantern:{state:'preview',detail:'پیش‌نمایش؛ اتصال واقعی در مرورگر ممکن نیست.'},version:'1.0.0'});
+  const invoke = async (method,data={}) => {
+    if(window.lml?.invoke) return window.lml.invoke(method,data);
+    if(window.LMLNative){
+      const result=JSON.parse(window.LMLNative.invoke(method,JSON.stringify(data)));
+      if(!result.ok) throw new Error(result.error || 'عملیات انجام نشد.');
+      return result.value;
+    }
+    switch(method){
+      case 'snapshot': return demoSnapshot();
+      case 'selectEngine': previewSettings.engine=data.engine; break;
+      case 'saveSettings': previewSettings={...previewSettings,...data}; break;
+      case 'selectServer': previewSettings.lanternTag=data.tag; break;
+      case 'servers': return [];
+      case 'openLink': throw new Error('لینک‌ها در پیش‌نمایش غیرفعال‌اند.');
+      default: throw new Error('این فقط پیش‌نمایش رابط است؛ برای اتصال، برنامهٔ واقعی لازم است.');
+    }
+    try { localStorage.setItem('lml-preview-settings',JSON.stringify(previewSettings)); } catch {}
+    return demoSnapshot();
+  };
+  let snap=null, hydrated=false, timer, allServers=[], serverLoaded=false, serverLoading=false, serverError='', actionBusy=false, countrySignature='', nextServerRetry=0, serverRetries=0;
+  let activePage='home', configData={items:[],note:'',refreshing:false}, selectedConfig='', configRequested=false, probeState={running:false,done:0,total:0};
+  const headings={home:['آزادی، فقط یک لمس فاصله داره.','موتورت رو انتخاب کن و به اینترنت دلخواهت وصل شو.'],engines:['شیر و خورشید و لنترن','دو موتور مستقل، جدا از کانفیگ‌ها.'],settings:['همه‌چیز همون‌طور که تو می‌خوای.','تنظیمات برنامه رو شخصی‌سازی کن.'],feed:['تلگرام (سارتو)','TheFeed؛ کانال‌ها و پیام‌ها در همین پنجره.'],configs:['کانفیگ و زنجیره','کانال‌ها، DNS فید و پینگ روی اینترنت تو.']};
+  function toast(message,error=false){
+    const el=$('#toast'); el.textContent=message; el.classList.toggle('error',error); el.classList.add('show');
+    clearTimeout(timer); timer=setTimeout(()=>el.classList.remove('show'),4200);
+  }
+  function message(err){
+    let m=String(err?.message||err||'خطایی رخ داد.');
+    if(m.includes('Error: '))m=m.substring(m.lastIndexOf('Error: ')+7);
+    return m.length>260 ? m.slice(0,260)+'…' : m;
+  }
+  function feedBounds(){const r=$('#feed-viewport').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};}
+  function syncFeed(){if(activePage==='feed' && platform==='windows')void invoke('feedPosition',{bounds:feedBounds()}).catch(()=>{});}
+  function go(page){
+    if(!headings[page])return;
+    if(activePage==='feed' && page!=='feed' && platform==='windows')void invoke('hideFeed').catch(()=>{});
+    activePage=page;
+    $$('.page').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
+    $$('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.nav===page));
+    $('#page-heading').textContent=headings[page][0]; $('#page-subheading').textContent=headings[page][1];
+    document.querySelector('.main').scrollTo?.({top:0,behavior:'smooth'}); window.scrollTo({top:0,behavior:'smooth'});
+    if(page==='feed' && platform==='windows'){
+      setTimeout(()=>{if(activePage==='feed')void invoke('openFeed',{bounds:feedBounds()}).catch(e=>feedStatus({state:'error',message:message(e)}));},0);
+      setTimeout(syncFeed,350);
+    }
+    if(page==='configs' && platform==='windows' && !configRequested){configRequested=true;void loadConfigs(true);}
+  }
+  function feedStatus(st){
+    const failed=st?.state==='error';$('#feed-message').textContent=failed?(st.message||'راه‌اندازی TheFeed ممکن نشد.'):'در حال آماده‌سازی TheFeed…';
+    $('#feed-retry').classList.toggle('hidden',!failed);$('#feed-update-note').classList.toggle('hidden',!st?.updateReady);
+  }
+  window.lml?.onFeedStatus?.(feedStatus);
+  window.addEventListener('resize',syncFeed);window.addEventListener('scroll',syncFeed,true);
+  if(typeof ResizeObserver!=='undefined')new ResizeObserver(syncFeed).observe($('#feed-viewport'));
+  function engineName(e){return e==='lantern'?'لنترن':'شیر و خورشید';}
+  function stateInfo(s){
+    if(platform==='preview')return {title:'پیش‌نمایش برنامه',top:'پیش‌نمایش',detail:'این صفحه اتصال واقعی ندارد.',kind:'preview'};
+    const activeConfig=['connected','connecting','disconnecting'].includes(s.configConnection?.state);
+    const current=activeConfig?s.configConnection:(s.settings.engine==='shiro'?s.shiro:s.lantern);
+    const map={disconnected:['قطع هستی','قطع'],connected:['متصل هستی','متصل'],connecting:['در حال اتصال','در حال اتصال'],disconnecting:['در حال قطع اتصال','در حال قطع'],restarting:['در حال اتصال مجدد','در حال اتصال'],unavailable:['سرویس در دسترس نیست','خطای سرویس'],error:['اتصال برقرار نشد','خطا'],unknown:['وضعیت نامشخص','نامشخص']};
+    if(activeConfig && current?.state==='connected' && current.tested!==true){
+      const failed=current.tested===false;
+      return {title:failed?'آزمون مسیر ناموفق بود':'در حال بررسی مسیر',top:failed?'بررسی مسیر':'در حال بررسی',detail:current.detail||'',kind:failed?'config-warning':'config-checking'};
+    }
+    const pair=map[current?.state]||map.unknown;
+    return {title:pair[0],top:pair[1],detail:current?.detail||'',kind:current?.state||'unknown'};
+  }
+  function hydrate(s){
+    if(!s?.settings)return;
+    $('#cdn-ips').value=s.settings.cdnIPs||'';
+    $('#auto-start').checked=!!s.settings.autoStart; $('#system-proxy').checked=!!s.settings.systemProxy;
+    $('#routing-preset').value=s.settings.routingPreset||'global';$('#routing-custom').value=s.settings.routingCustom||'';hydrated=true;
+  }
+  function update(s){
+    if(!s?.settings)return; snap=s; if(!hydrated)hydrate(s);
+    if(platform==='android' && s.lantern?.serversReady && Array.isArray(s.lantern.servers)) {
+      allServers=s.lantern.servers; serverLoaded=true; serverLoading=false; serverError='';
+    } else if(platform==='android' && serverLoading && s.lantern?.state==='error') {
+      serverLoading=false; serverError='فهرست لنترن در دسترس نیست؛ دوباره تلاش کن.';
+    }
+    const engine=s.settings.engine, info=stateInfo(s), configActive=['connected','connecting','disconnecting'].includes(s.configConnection?.state);
+    $$('[data-engine]').forEach(el=>el.classList.toggle('active',el.dataset.engine===engine));
+    $('#selected-engine-mini').textContent=configActive?'کانفیگ · Xray':engineName(engine);
+    $('#state-title').textContent=info.title; $('#state-detail').textContent=info.detail;
+    $('#top-status').lastChild.textContent=info.top;
+    const stateStyle=info.kind==='connected'?'connected':(info.kind==='config-warning'?'config-warning':(['connecting','restarting','config-checking'].includes(info.kind)?'connecting':''));
+    $('#top-status').className='status-pill '+stateStyle;
+    $('#state-dot').className='state-dot '+stateStyle;
+    const power=$('#power-button');
+    power.classList.toggle('is-connected',info.kind==='connected');
+    power.classList.toggle('is-warning',info.kind==='config-warning');
+    power.classList.toggle('is-busy',['connecting','disconnecting','restarting','config-checking'].includes(info.kind));
+    power.setAttribute('aria-label',['connected','connecting','restarting','config-warning','config-checking'].includes(info.kind)?'قطع اتصال':'اتصال');
+    power.disabled=actionBusy || info.kind==='disconnecting';
+    $('#scope-label').textContent=configActive?'پراکسی کانفیگ':(platform==='android'?'VPN دستگاه':(engine==='lantern'?'سرویس داخلی لنترن':(s.settings.systemProxy?'پراکسی ویندوز':'پراکسی محلی')));
+    if(!configActive && platform==='windows' && engine==='shiro' && s.shiro?.state==='connected' && !s.settings.systemProxy && s.shiro.httpPort){
+      $('#state-detail').textContent=`پراکسی محلی HTTP: 127.0.0.1:${s.shiro.httpPort} — تنظیم سیستم خاموش است.`;
+    }
+    if(s.configProbe)probeState=s.configProbe;renderCountries();renderConfigs();renderUpdate(s.appUpdate);
+  }
+  async function act(method,data,success){
+    if(actionBusy)return null;
+    actionBusy=true; if(snap) update(snap);
+    try {
+      const result=await invoke(method,data);
+      if(result?.settings)update(result);
+      if(success)toast(success);
+      return result;
+    } catch(e){toast(message(e),true);return null;}
+    finally {actionBusy=false;if(snap)update(snap);}
+  }
+  function countryName(code,fallback=''){
+    try { return new Intl.DisplayNames(['fa'],{type:'region'}).of(code)||fallback||code; }
+    catch { return ({DE:'آلمان',NL:'هلند',GB:'بریتانیا',US:'آمریکا',CA:'کانادا',FR:'فرانسه',TR:'ترکیه',SE:'سوئد'})[code]||fallback||code; }
+  }
+  function renderCountries(force=false){
+    if(!snap)return;
+    const lantern=snap.settings.engine==='lantern';
+    const current=lantern?(snap.settings.lanternTag||''):(snap.settings.region||'');
+    const state=(lantern?snap.lantern:snap.shiro)?.state;
+    const regions=Array.isArray(snap.shiro?.regions)?snap.shiro.regions:[];
+    const signature=JSON.stringify([lantern,current,state,regions,allServers,serverLoaded,serverLoading,serverError,actionBusy]);
+    if(!force && signature===countrySignature)return; countrySignature=signature;
+    const select=$('#home-region'), hint=$('#country-hint');
+    select.replaceChildren();
+    const auto=document.createElement('option'); auto.value=''; auto.textContent='انتخاب خودکار'; select.append(auto);
+    const labels=new Map();
+    if(lantern){
+      for(const server of allServers){
+        const base=[countryName(server.countryCode,server.country),server.city].filter(Boolean).join(' · ')||'موقعیت نامشخص';
+        const n=(labels.get(base)||0)+1; labels.set(base,n);
+        const option=document.createElement('option'); option.value=server.tag; option.textContent=base+(n>1?` (${n.toLocaleString('fa-IR')})`:''); select.append(option);
+      }
+      hint.textContent=serverLoading?'در حال دریافت فهرست واقعی لنترن…':serverError||(!serverLoaded?'فهرست واقعی لنترن را دریافت کن.':(allServers.length?'کشور و شهر از سرورهای فعلی لنترن است.':'هنوز سروری دریافت نشد؛ برنامه خودکار دوباره تلاش می‌کند.'));
+    }else{
+      const choices=[...new Set(['DE','NL','GB','US','CA','FR','TR',...regions])];
+      for(const code of choices){if(!/^[A-Z]{2}$/.test(code))continue;const option=document.createElement('option');option.value=code;option.textContent=countryName(code);select.append(option);}
+      hint.textContent='کشور را قبل از اتصال انتخاب کن؛ در دسترس بودن آن به سرورها و شبکه بستگی دارد.';
+    }
+    if(current && !Array.from(select.options).some(option=>option.value===current)){
+      const missing=document.createElement('option');missing.value=current;missing.textContent='انتخاب قبلی در فهرست فعلی نیست';missing.disabled=true;select.append(missing);
+    }
+    select.value=current;
+    select.disabled=actionBusy||['connected','connecting','restarting','disconnecting'].includes(state);
+    $('#country-subtitle').textContent=engineName(snap.settings.engine);
+    $('#refresh-countries').classList.toggle('hidden',!lantern);
+  }
+  async function loadLanternServers(showMessage=false){
+    if(serverLoading)return;
+    serverLoading=true;serverError='';renderCountries(true);
+    try{
+      const values=await invoke('servers');
+      if(!Array.isArray(values))throw new Error('فهرست لنترن نامعتبر بود.');
+      allServers=values;
+      if(platform!=='android'){
+        serverLoaded=true;
+        if(values.length){serverRetries=0;nextServerRetry=0;}else{serverRetries++;nextServerRetry=Date.now()+Math.min(30000,4000+serverRetries*2000);}
+      }
+      if(showMessage && platform!=='android')toast(values.length?`${values.length.toLocaleString('fa-IR')} سرور دریافت شد.`:'هنوز سروری آماده نیست؛ دوباره بررسی می‌شود.');
+    }catch(e){serverError='سرویس یا فهرست لنترن در دسترس نیست؛ تلاش خودکار ادامه دارد.';nextServerRetry=Date.now()+15000;if(showMessage)toast(message(e),true);}
+    finally{if(platform!=='android' || serverError)serverLoading=false;renderCountries(true);}
+  }
+  document.addEventListener('click',async event=>{
+    const nav=event.target.closest('[data-nav]'); if(nav){go(nav.dataset.nav);return;}
+    const wc=event.target.closest('[data-window]'); if(wc && window.lml?.window){window.lml.window(wc.dataset.window);return;}
+    const eng=event.target.closest('[data-engine]'); if(eng){
+      const result=await act('selectEngine',{engine:eng.dataset.engine});if(result){toast(`${engineName(eng.dataset.engine)} انتخاب شد.`);if(eng.dataset.engine==='lantern')void loadLanternServers();}return;
+    }
+    const link=event.target.closest('[data-link]'); if(link){await act('openLink',{key:link.dataset.link});return;}
+  });
+  $('#power-button').addEventListener('click',async()=>{
+    if(!snap)return;
+    const configActive=['connected','connecting','disconnecting'].includes(snap.configConnection?.state);
+    const state=(snap.settings.engine==='shiro'?snap.shiro:snap.lantern)?.state;
+    const method=configActive?'configsDisconnect':(['connected','connecting','restarting'].includes(state)?'disconnect':'connect');
+    await act(method,{});
+  });
+  $('#save-engine').addEventListener('click',async()=>{
+    const data={cdnIPs:$('#cdn-ips').value,sniNames:''};
+    const r=await act('saveSettings',data,'تنظیمات ذخیره شد؛ در اتصال بعدی اعمال می‌شود.');if(r?.settings)hydrate(r);
+  });
+  $('#save-general').addEventListener('click',async()=>{
+    const r=await act('saveSettings',{autoStart:$('#auto-start').checked,systemProxy:$('#system-proxy').checked},'تنظیمات ذخیره شد.');if(r?.settings)hydrate(r);
+  });
+  $('#home-region').addEventListener('change',async event=>{
+    if(!snap)return;
+    const lantern=snap.settings.engine==='lantern';
+    const result=await act(lantern?'selectServer':'saveSettings',lantern?{tag:event.target.value}:{region:event.target.value});
+    renderCountries(true);
+    if(result)toast('کشور برای اتصال بعدی ذخیره شد.');
+  });
+  $('#refresh-countries').addEventListener('click',()=>{void loadLanternServers(true);});
+  function renderUpdate(u){
+    if(!u)return;$('#app-update-state').textContent=u.detail||'';
+    $('#app-update-install').classList.toggle('hidden',u.state!=='ready');
+    $('#app-update-check').disabled=['checking','downloading'].includes(u.state);
+  }
+  window.lml?.onAppUpdate?.(renderUpdate);
+  $('#app-update-check').addEventListener('click',async()=>{try{renderUpdate(await invoke('checkAppUpdate'));}catch(e){toast(message(e),true);}});
+  $('#app-update-install').addEventListener('click',async()=>{try{await invoke('installAppUpdate');}catch(e){toast(message(e),true);}});
+  $('#feed-retry').addEventListener('click',async()=>{try{await invoke('retryFeed');}catch(e){feedStatus({state:'error',message:message(e)});}});
+  function modeHint(){
+    const mode=$('#config-mode').value;
+    $('#config-mode-hint').textContent=mode==='psiphon-via-xray'?'ترافیک برنامه وارد سایفون می‌شود و ارتباط سایفون از کانفیگ عبور می‌کند.':mode==='xray-via-psiphon'?'ترافیک برنامه وارد کانفیگ می‌شود و ارتباط کانفیگ از سایفون عبور می‌کند.':'ترافیک برنامه فقط از کانفیگ انتخاب‌شده عبور می‌کند.';
+  }
+  function renderConfigs(){
+    const all=Array.isArray(configData.items)?configData.items:[],filter=$('#config-source-filter'),current=filter.value;
+    const sources=[...new Set(all.map(x=>x.source).filter(Boolean))];
+    if(JSON.stringify(sources)!==filter.dataset.sources){
+      filter.replaceChildren();const o=document.createElement('option');o.value='';o.textContent='همهٔ منابع';filter.append(o);
+      for(const source of sources){const item=document.createElement('option');item.value=source;item.textContent=source;filter.append(item);}
+      filter.dataset.sources=JSON.stringify(sources);filter.value=sources.includes(current)?current:'';
+    }
+    const proto=$('#config-protocol-filter').value;
+    const list=all.filter(x=>(!filter.value||x.source===filter.value)&&(!proto||String(x.scheme).toLowerCase()===proto.toLowerCase()));
+    if($('#config-sort').value==='latency')list.sort((a,b)=>(a.latency>0?a.latency:Infinity)-(b.latency>0?b.latency:Infinity));
+    $('#config-count').textContent=`${all.length.toLocaleString('fa-IR')} مورد`;
+    $('#config-note').textContent=configData.refreshing?(configData.note||'در حال دریافت کانال‌ها…'):(configData.note||'برای دریافت کانفیگ به‌روزرسانی را بزن.');
+    $('#config-refresh').disabled=!!configData.refreshing||probeState.running;
+    const target=$('#config-list'),scrollTop=target.scrollTop;target.replaceChildren();
+    for(const c of list.slice(0,1000)){
+      const button=document.createElement('button');button.className='config-item'+(selectedConfig===c.id?' selected':'');button.dataset.configId=c.id;
+      const info=document.createElement('span');info.className='config-item-main';const title=document.createElement('b');title.textContent=c.name;
+      const sub=document.createElement('small');sub.textContent=`${c.source||''}  ·  ${c.network||''} / ${c.security||''}${c.insecure?'  ·  ⚠ TLS':''}`;if(c.insecure)sub.className='unsafe';
+      info.append(title,sub);const latency=document.createElement('span');latency.className='latency'+(c.latency===-1?' failed':'');latency.textContent=c.latency===-1?'ناموفق':(c.latency>0?`${Math.round(c.latency)} ms`:'');
+      const badge=document.createElement('span');badge.className='protocol';badge.textContent=c.scheme;button.append(info,latency,badge);target.append(button);
+    }
+    target.scrollTop=scrollTop;
+    const chosen=all.find(x=>x.id===selectedConfig);$('#config-selected').textContent=chosen?`${chosen.name} — ${chosen.source}`:'هنوز کانفیگی انتخاب نشده است.';
+    const st=snap?.configConnection||{state:'disconnected',detail:'آمادهٔ انتخاب کانفیگ'};
+    $('#config-state').textContent=st.detail||'';
+    const isActive=['connecting','connected','disconnecting'].includes(st.state);
+    $('#config-connect').textContent=isActive?'قطع اتصال':'اتصال';
+    $('#config-connect').disabled=actionBusy||probeState.running||st.state==='disconnecting'||(!isActive&&!chosen);
+    $('#config-mode').disabled=isActive||probeState.running;
+    $('#config-test-selected').disabled=!chosen||isActive||probeState.running;$('#config-test-all').disabled=!all.length||isActive||probeState.running;
+    $('#config-test-stop').classList.toggle('hidden',!probeState.running);
+    $('#config-progress').textContent=probeState.running?`در حال پینگ: ${Number(probeState.done||0).toLocaleString('fa-IR')} از ${Number(probeState.total||0).toLocaleString('fa-IR')}`:'پینگ از مسیر کانفیگ روی اینترنت فعلی تو انجام می‌شود؛ فید فقط متن کانال‌ها را با DNS می‌رساند.';
+    modeHint();
+  }
+  async function loadConfigs(refresh=false){
+    try{const v=await invoke(refresh?'configsRefresh':'configsList');if(v&&Array.isArray(v.items)){configData=v;renderConfigs();}}
+    catch(e){toast(message(e),true);}
+  }
+  window.lml?.onConfigs?.(v=>{if(v&&Array.isArray(v.items)){configData=v;renderConfigs();}});
+  function syncProbe(v){if(v){probeState=v;if(snap)snap.configProbe={...v};}renderConfigs();}
+  window.lml?.onConfigProgress?.(syncProbe);
+  $('#config-refresh').addEventListener('click',()=>void loadConfigs(true));
+  for(const id of ['config-source-filter','config-protocol-filter','config-sort','config-mode'])$('#'+id).addEventListener('change',renderConfigs);
+  $('#config-list').addEventListener('click',event=>{const item=event.target.closest('[data-config-id]');if(item){selectedConfig=item.dataset.configId;renderConfigs();}});
+  $('#routing-save').addEventListener('click',async()=>{const r=await act('saveSettings',{routingPreset:$('#routing-preset').value,routingCustom:$('#routing-custom').value},'مسیریابی برای اتصال بعدی ذخیره شد.');if(r?.settings)hydrate(r);});
+  async function testConfigs(all){try{syncProbe(await invoke('configsTest',{all,id:selectedConfig}));}catch(e){toast(message(e),true);}}
+  $('#config-test-selected').addEventListener('click',()=>void testConfigs(false));$('#config-test-all').addEventListener('click',()=>void testConfigs(true));
+  $('#config-test-stop').addEventListener('click',async()=>{try{syncProbe(await invoke('configsTestStop'));}catch(e){toast(message(e),true);}});
+  $('#config-connect').addEventListener('click',async()=>{
+    const active=['connected','connecting','disconnecting'].includes(snap?.configConnection?.state);
+    await act(active?'configsDisconnect':'configsConnect',active?{}:{id:selectedConfig,mode:$('#config-mode').value});
+  });
+  function platformSetup(){
+    $('#preview-banner').classList.toggle('hidden',platform!=='preview');
+    $('#android-banner').classList.toggle('hidden',platform!=='android');
+    $$('.android-only').forEach(e=>e.classList.toggle('hidden',platform!=='android'));
+    $$('.win-only').forEach(e=>e.classList.toggle('hidden',platform==='android'));
+    if(platform==='android'){
+      $('#platform-note').textContent='اندروید · نسخه ۱٫۰٫۰';
+      $('#safety-note-text').textContent='برای اتصال هر موتور اجازهٔ VPN اندروید را تأیید کن.';
+    } else if(platform==='preview') $('#platform-note').textContent='پیش‌نمایش طراحی';
+  }
+  platformSetup();
+  (async()=>{try{update(await invoke('snapshot'));if(snap?.settings.engine==='lantern')void loadLanternServers();if(platform==='windows')void loadConfigs(false);}catch(e){toast(message(e),true);}})();
+  setInterval(async()=>{if(actionBusy)return;try{update(await invoke('snapshot'));if(platform==='windows' && snap?.settings.engine==='lantern' && !serverLoading && !allServers.length && Date.now()>=nextServerRetry)void loadLanternServers();}catch{}},2500);
+})();

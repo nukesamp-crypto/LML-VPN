@@ -1,0 +1,1403 @@
+package backend
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	C "github.com/getlantern/common"
+	"github.com/sagernet/sing-box/option"
+	singjson "github.com/sagernet/sing/common/json"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/getlantern/radiance/common/settings"
+	"github.com/getlantern/radiance/config"
+	"github.com/getlantern/radiance/events"
+	"github.com/getlantern/radiance/helper"
+	"github.com/getlantern/radiance/internal"
+	"github.com/getlantern/radiance/log"
+	"github.com/getlantern/radiance/peer"
+	"github.com/getlantern/radiance/servers"
+	"github.com/getlantern/radiance/unbounded"
+	"github.com/getlantern/radiance/vpn"
+)
+
+// newCachedConfigBackend returns a backend loading its config and servers
+// from dataDir, as at startup.
+func newCachedConfigBackend(t *testing.T, dataDir string) *LocalBackend {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := config.NewConfigHandler(ctx, config.Options{
+		DataPath: dataDir,
+		Logger:   log.NoOpLogger(),
+	})
+	srvMgr, err := servers.NewManager(dataDir, log.NoOpLogger())
+	require.NoError(t, err)
+	return &LocalBackend{
+		ctx:         ctx,
+		confHandler: ch,
+		srvManager:  srvMgr,
+		vpnClient:   vpn.NewVPNClient(dataDir, log.NoOpLogger(), nil),
+	}
+}
+
+func writeCachedConfig(t *testing.T, dataDir string, cfg *config.Config) {
+	t.Helper()
+	buf, err := singjson.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, internal.ConfigFileName), buf, 0o600))
+}
+
+func TestApplyCurrentConfigLoadsCachedServers(t *testing.T) {
+	t.Setenv("RADIANCE_COUNTRY", "US")
+	dataDir := t.TempDir()
+	writeCachedConfig(t, dataDir, cachedConfig())
+	r := newCachedConfigBackend(t, dataDir)
+
+	r.applyCurrentConfig()
+
+	server, found := r.GetServerByTag("cached-out")
+	require.True(t, found)
+	assert.True(t, server.IsLantern)
+	assert.Equal(t, "shadowsocks", server.Type)
+	assert.Equal(t, "Shanghai", server.Location.City)
+	assert.Equal(t, "CN", server.Location.CountryCode)
+}
+
+func TestApplyCurrentConfigKeepsHardDemotedServers(t *testing.T) {
+	t.Setenv("RADIANCE_COUNTRY", "US")
+	dataDir := t.TempDir()
+	cfg := cachedConfig()
+	writeCachedConfig(t, dataDir, cfg)
+	r := newCachedConfigBackend(t, dataDir)
+	r.applyCurrentConfig()
+	require.NoError(t, r.srvManager.UpdateSelectionHistory(map[string]servers.SelectionHistory{
+		"cached-out": {HardDemoted: true},
+	}))
+
+	// Restart: the cached config was already applied when it was received.
+	r = newCachedConfigBackend(t, dataDir)
+	r.applyCurrentConfig()
+	server, found := r.GetServerByTag("cached-out")
+	require.True(t, found, "applying the cached config at startup must not evict")
+	require.NotNil(t, server.SelectionHistory)
+	assert.True(t, server.SelectionHistory.HardDemoted)
+
+	r.applyConfig(cfg, true)
+	_, found = r.GetServerByTag("cached-out")
+	assert.False(t, found, "a newly received config still evicts hard-demoted servers")
+}
+
+func cachedConfig() *config.Config {
+	return &config.Config{
+		Country: "CN",
+		OutboundLocations: C.OutboundLocations{
+			"cached-out": {
+				Country:     "China",
+				City:        "Shanghai",
+				CountryCode: "CN",
+			},
+		},
+		Options: option.Options{
+			Outbounds: []option.Outbound{{
+				Tag:  "cached-out",
+				Type: "shadowsocks",
+				Options: &option.ShadowsocksOutboundOptions{
+					ServerOptions: option.ServerOptions{
+						Server:     "127.0.0.1",
+						ServerPort: 443,
+					},
+					Method:   "chacha20-ietf-poly1305",
+					Password: "password",
+				},
+			}},
+		},
+	}
+}
+
+// TestNewLocalBackendToleratesInvalidOnDiskState guards the init hardening:
+// invalid-but-readable on-disk state must not make NewLocalBackend fatal, so a
+// user can always report an issue. Every fixture is readable, so a returned
+// error can only come from parsing — a non-IO failure that must stay non-fatal.
+func TestNewLocalBackendToleratesInvalidOnDiskState(t *testing.T) {
+	dataDir := t.TempDir()
+	logDir := t.TempDir()
+	t.Cleanup(func() {
+		assert.NoError(t, debug.SetCrashOutput(nil, debug.CrashOptions{}))
+	})
+	// setupDirectories honors these env vars over the Options paths; pin them so
+	// the resolved data dir is exactly where the invalid files are staged.
+	t.Setenv("RADIANCE_DATA_PATH", dataDir)
+	t.Setenv("RADIANCE_LOG_PATH", logDir)
+
+	invalidFiles := map[string][]byte{
+		"settings.json":              []byte(`{invalid json}`),
+		internal.ConfigFileName:      []byte(`{"options":{"outbounds":[{"type":"future-proto"}]}}`),
+		internal.ServersFileName:     []byte(`[{"tag":"bad","type":"future-proto","outbound":{"tag":"bad","type":"future-proto"}}]`),
+		internal.SplitTunnelFileName: []byte(`{"version":3,"rules":[{"unknown_field":true}]}`),
+	}
+	for name, content := range invalidFiles {
+		require.NoError(t, os.WriteFile(filepath.Join(dataDir, name), content, 0o600))
+	}
+
+	backend, err := NewLocalBackend(context.Background(), Options{DataDir: dataDir, LogDir: logDir, LogLevel: "error"})
+	require.NoError(t, err, "invalid but readable on-disk state must not make initialization fatal")
+	require.NotNil(t, backend)
+	t.Cleanup(backend.Close)
+}
+
+func TestExhaustionGate_AllowRateLimitsBelowGap(t *testing.T) {
+	prev := defaultExhaustionRefetchGap
+	defaultExhaustionRefetchGap = 50 * time.Millisecond
+	t.Cleanup(func() { defaultExhaustionRefetchGap = prev })
+
+	var g exhaustionGate
+	require.True(t, g.allow(), "first allow must pass on a zero gate")
+	assert.False(t, g.allow(), "second allow inside the gap must be rate-limited")
+	assert.False(t, g.allow(), "third allow inside the gap must still be rate-limited")
+
+	time.Sleep(defaultExhaustionRefetchGap + 10*time.Millisecond)
+	assert.True(t, g.allow(), "allow after the gap elapses must pass again")
+	assert.False(t, g.allow(), "post-recovery allow must re-arm the gate")
+}
+
+func newTestServer(tag string, isLantern, hardDemoted bool, updatedAt time.Time) *servers.Server {
+	srv := &servers.Server{
+		Tag:       tag,
+		IsLantern: isLantern,
+	}
+	if hardDemoted || !updatedAt.IsZero() {
+		srv.SelectionHistory = &servers.SelectionHistory{
+			HardDemoted: hardDemoted,
+			UpdatedAt:   updatedAt,
+		}
+	}
+	return srv
+}
+
+func TestLanternServersToEvict(t *testing.T) {
+	baseTime := time.Unix(0, 0).UTC()
+
+	tests := []struct {
+		name     string
+		existing []*servers.Server
+		incoming int
+		limit    int
+		selected string
+		want     []string
+	}{
+		{
+			name: "evicts only hard-demoted lantern servers",
+			existing: []*servers.Server{
+				newTestServer("demoted", true, true, baseTime),
+				newTestServer("working", true, false, baseTime),
+				newTestServer("users-demoted", false, true, baseTime),
+			},
+			limit: 60,
+			want:  []string{"demoted"},
+		},
+		{
+			name: "hard-demoted lantern server is evicted regardless of incoming config",
+			existing: []*servers.Server{
+				newTestServer("demoted", true, true, baseTime),
+			},
+			incoming: 1,
+			limit:    60,
+			want:     []string{"demoted"},
+		},
+		{
+			name: "under the limit nothing is evicted",
+			existing: []*servers.Server{
+				newTestServer("a", true, false, baseTime),
+				newTestServer("b", true, false, baseTime),
+			},
+			incoming: 2,
+			limit:    60,
+		},
+		{
+			name: "over the limit evicts oldest working servers and keeps the newest",
+			existing: []*servers.Server{
+				newTestServer("old", true, false, baseTime.Add(1*time.Hour)),
+				newTestServer("mid", true, false, baseTime.Add(2*time.Hour)),
+				newTestServer("new", true, false, baseTime.Add(3*time.Hour)),
+			},
+			incoming: 1,
+			limit:    3,
+			want:     []string{"old"},
+		},
+		{
+			name: "incoming at the limit evicts all existing working servers",
+			existing: []*servers.Server{
+				newTestServer("a", true, false, baseTime.Add(1*time.Hour)),
+				newTestServer("b", true, false, baseTime.Add(2*time.Hour)),
+			},
+			incoming: 3,
+			limit:    3,
+			want:     []string{"a", "b"},
+		},
+		{
+			name: "selected working server is exempt but counts toward the limit",
+			existing: []*servers.Server{
+				newTestServer("old-selected", true, false, baseTime.Add(1*time.Hour)),
+				newTestServer("a", true, false, baseTime.Add(2*time.Hour)),
+				newTestServer("b", true, false, baseTime.Add(3*time.Hour)),
+				newTestServer("c", true, false, baseTime.Add(4*time.Hour)),
+			},
+			incoming: 1,
+			limit:    3,
+			selected: "old-selected",
+			want:     []string{"a", "b"},
+		},
+		{
+			name: "selected server is still evicted when hard-demoted",
+			existing: []*servers.Server{
+				newTestServer("selected-demoted", true, true, baseTime),
+				newTestServer("working", true, false, baseTime),
+			},
+			limit:    60,
+			selected: "selected-demoted",
+			want:     []string{"selected-demoted"},
+		},
+		{
+			name: "server with no selection history sorts oldest",
+			existing: []*servers.Server{
+				newTestServer("no-history", true, false, time.Time{}),
+				newTestServer("probed", true, false, baseTime.Add(5*time.Hour)),
+			},
+			incoming: 1,
+			limit:    2,
+			want:     []string{"no-history"},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got := lanternServersToEvict(tt.existing, tt.incoming, tt.limit, tt.selected)
+			assert.ElementsMatch(t, tt.want, got)
+		})
+	}
+}
+
+func TestAppendManagedServerOptionsIncludesRetainedLanternServers(t *testing.T) {
+	options := option.Options{
+		Outbounds: []option.Outbound{
+			{Tag: "current", Type: "shadowsocks"},
+			{Tag: "retained-current", Type: "shadowsocks"},
+		},
+		Endpoints: []option.Endpoint{
+			{Tag: "current-endpoint", Type: "wireguard"},
+		},
+	}
+	managed := []*servers.Server{
+		{
+			Tag:       "retained-current",
+			Type:      "hysteria2",
+			IsLantern: true,
+			Options:   option.Outbound{Tag: "retained-current", Type: "hysteria2"},
+		},
+		{
+			Tag:       "server-alias-for-current",
+			Type:      "hysteria2",
+			IsLantern: true,
+			Options:   option.Outbound{Tag: "current", Type: "hysteria2"},
+		},
+		{
+			Tag:       "retained-missing",
+			Type:      "shadowsocks",
+			IsLantern: true,
+			Options:   option.Outbound{Tag: "retained-missing", Type: "shadowsocks"},
+		},
+		{
+			Tag:       "user-missing",
+			Type:      "trojan",
+			IsLantern: false,
+			Options:   option.Outbound{Tag: "user-missing", Type: "trojan"},
+		},
+		{
+			Tag:       "missing-option-tag",
+			Type:      "shadowsocks",
+			IsLantern: true,
+			Options:   option.Outbound{Type: "shadowsocks"},
+		},
+		{
+			Tag:       "retained-endpoint",
+			Type:      "wireguard",
+			IsLantern: true,
+			Options:   option.Endpoint{Tag: "retained-endpoint", Type: "wireguard"},
+		},
+		{
+			Tag:       "server-alias-for-current-endpoint",
+			Type:      "wireguard",
+			IsLantern: true,
+			Options:   option.Endpoint{Tag: "current-endpoint", Type: "wireguard"},
+		},
+		{
+			Tag:       "metadata-only",
+			IsLantern: true,
+		},
+	}
+
+	appendManagedServerOptions(&options, managed)
+
+	assert.Equal(t, []string{
+		"current",
+		"retained-current",
+		"retained-missing",
+		"user-missing",
+	}, outboundTags(options.Outbounds))
+	assert.Equal(t, "shadowsocks", options.Outbounds[1].Type, "current config should win duplicate tags")
+	assert.Equal(t, []string{
+		"current-endpoint",
+		"retained-endpoint",
+	}, endpointTags(options.Endpoints))
+}
+
+func outboundTags(outbounds []option.Outbound) []string {
+	tags := make([]string, 0, len(outbounds))
+	for _, out := range outbounds {
+		tags = append(tags, out.Tag)
+	}
+	return tags
+}
+
+func endpointTags(endpoints []option.Endpoint) []string {
+	tags := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		tags = append(tags, endpoint.Tag)
+	}
+	return tags
+}
+
+type fakePeerController struct {
+	startCalls atomic.Int64
+	stopCalls  atomic.Int64
+	startErr   error
+	active     atomic.Bool
+	// servePoolAtStart is peer_serve_pool as the first Start saw it, which
+	// is what that Start's registration sends.
+	servePoolAtStart atomic.Value // any
+	reregisterCalls  atomic.Int64
+	// reregisterFn, when set, answers Reregister; it gets the call's number,
+	// from 1.
+	reregisterFn atomic.Pointer[func(context.Context, int64) error]
+}
+
+func (f *fakePeerController) Start(_ context.Context) error {
+	if f.startCalls.Add(1) == 1 {
+		f.servePoolAtStart.Store(fmt.Sprint(settings.Get(settings.PeerServePoolKey)))
+	}
+	if f.startErr != nil {
+		return f.startErr
+	}
+	f.active.Store(true)
+	return nil
+}
+
+func (f *fakePeerController) Stop(_ context.Context) error {
+	f.stopCalls.Add(1)
+	f.active.Store(false)
+	return nil
+}
+
+func (f *fakePeerController) Reregister(ctx context.Context) error {
+	n := f.reregisterCalls.Add(1)
+	if fn := f.reregisterFn.Load(); fn != nil {
+		return (*fn)(ctx, n)
+	}
+	return nil
+}
+
+func (f *fakePeerController) setReregister(fn func(context.Context, int64) error) {
+	f.reregisterFn.Store(&fn)
+}
+
+func (f *fakePeerController) IsActive() bool               { return f.active.Load() }
+func (f *fakePeerController) CurrentStatus() peer.Status   { return peer.Status{Active: f.active.Load()} }
+func (f *fakePeerController) RelaySnapshot() peer.Snapshot { return peer.Snapshot{} }
+
+// newPeerTestBackend wires a minimal LocalBackend with only the fields
+// applyPeerShare touches. settings is initialized to a fresh tempdir per test
+// so the rollback path doesn't leak across runs.
+func newPeerTestBackend(t *testing.T, fake *fakePeerController) *LocalBackend {
+	t.Helper()
+	require.NoError(t, settings.InitSettings(t.TempDir()))
+	t.Cleanup(settings.Reset)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return &LocalBackend{ctx: ctx, peerClient: fake}
+}
+
+func TestPatchSettings_RejectsInvalidSplitTunnelPolicy(t *testing.T) {
+	require.NoError(t, settings.InitSettings(t.TempDir()))
+	t.Cleanup(settings.Reset)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	r := &LocalBackend{ctx: ctx}
+
+	err := r.PatchSettings(settings.Settings{settings.SplitTunnelPolicyKey: "bogus"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "invalid")
+	assert.Empty(t, settings.GetString(settings.SplitTunnelPolicyKey),
+		"an invalid policy must not be persisted")
+}
+
+func TestApplyPeerShare_StartsOnEnable(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+
+	require.NoError(t, r.applyPeerShare(true))
+	assert.Equal(t, int64(1), fake.startCalls.Load())
+	assert.Equal(t, int64(0), fake.stopCalls.Load())
+	assert.True(t, fake.IsActive())
+}
+
+func TestApplyPeerShare_StopsOnDisable(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+
+	require.NoError(t, r.applyPeerShare(false))
+	assert.Equal(t, int64(0), fake.startCalls.Load())
+	assert.Equal(t, int64(1), fake.stopCalls.Load())
+	assert.False(t, fake.IsActive())
+}
+
+// On a Start failure we surface the error so the Dart side can roll back
+// its UI, AND we flip the persisted setting back to false so the user-visible
+// state matches reality on the next read.
+func TestApplyPeerShare_StartFailureRollsBackSetting(t *testing.T) {
+	fake := &fakePeerController{startErr: errors.New("no upnp")}
+	r := newPeerTestBackend(t, fake)
+
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+	require.True(t, settings.GetBool(settings.PeerShareEnabledKey))
+
+	err := r.applyPeerShare(true)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "no upnp")
+	assert.False(t, settings.GetBool(settings.PeerShareEnabledKey),
+		"setting must roll back to false after a Start failure")
+	assert.False(t, fake.IsActive())
+}
+
+// The toggle is persisted "on" but the client stopped itself (the production
+// case: a heartbeat 404 after a failed rotation). The next "on" changes no
+// setting, and must still start the client.
+func TestPatchSettings_ToggleOnRestartsStoppedPeer(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: true}))
+	assert.Equal(t, int64(1), fake.startCalls.Load())
+	assert.True(t, fake.IsActive())
+
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: true}))
+	assert.Equal(t, int64(1), fake.startCalls.Load(), "a running peer is not restarted")
+}
+
+// A PATCH that turns peer share on alongside another change still restarts a
+// stopped peer, even though the peer key itself is unchanged.
+func TestPatchSettings_ToggleOnWithOtherChangesRestartsStoppedPeer(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	require.NoError(t, r.PatchSettings(settings.Settings{
+		settings.PeerShareEnabledKey: true,
+		settings.LocaleKey:           "fa-IR",
+	}))
+	assert.Equal(t, int64(1), fake.startCalls.Load())
+	assert.Equal(t, "fa-IR", settings.GetString(settings.LocaleKey))
+}
+
+// applyPeerShare persists the toggle it applies, so a self-stop that cleared
+// it before this Start doesn't leave a running peer with the toggle off.
+func TestApplyPeerShare_StartPersistsToggle(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: false}))
+
+	require.NoError(t, r.applyPeerShare(true))
+	assert.True(t, fake.IsActive())
+	assert.True(t, settings.GetBool(settings.PeerShareEnabledKey))
+}
+
+// An explicit "off" is applied even when the stored value already reads off,
+// which it does while an earlier "on" is still on its way to applyPeerShare.
+func TestPatchSettings_UnchangedOffStillStopsPeer(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: false}))
+
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: false}))
+	assert.Equal(t, int64(1), fake.stopCalls.Load())
+	assert.False(t, fake.IsActive())
+}
+
+// A non-boolean toggle is rejected rather than read as "off".
+func TestPatchSettings_NonBoolToggleRejected(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	for _, v := range []any{"true", nil, 1} {
+		require.Error(t, r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: v}), "%v", v)
+	}
+	assert.Zero(t, fake.stopCalls.Load())
+	assert.True(t, fake.IsActive())
+	assert.True(t, settings.GetBool(settings.PeerShareEnabledKey))
+}
+
+// A PATCH that turns sharing on and limits it to helper pairings registers
+// with serve_pool=false from the first registration.
+func TestPatchSettings_ServePoolPersistedBeforeSharingStarts(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+
+	require.NoError(t, r.PatchSettings(settings.Settings{
+		settings.PeerShareEnabledKey: true,
+		settings.PeerServePoolKey:    false,
+	}))
+	require.Equal(t, int64(1), fake.startCalls.Load())
+	assert.Equal(t, "false", fake.servePoolAtStart.Load(),
+		"the first registration must already see peer_serve_pool=false")
+	assert.False(t, settings.GetBool(settings.PeerServePoolKey))
+}
+
+// An invalid setting in the same PATCH is rejected before the toggle applies.
+func TestPatchSettings_InvalidPatchDoesNotToggle(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+
+	err := r.PatchSettings(settings.Settings{
+		settings.PeerShareEnabledKey:  true,
+		settings.SplitTunnelPolicyKey: "bogus",
+	})
+	require.Error(t, err)
+	assert.Zero(t, fake.startCalls.Load())
+	assert.False(t, settings.GetBool(settings.PeerShareEnabledKey))
+}
+
+// An "off" queued behind an "on" that is still starting must win: the setting
+// ends off and the peer stopped, in the order the toggles arrived.
+func TestPatchSettings_OffQueuedBehindStartingOnWins(t *testing.T) {
+	fake := &blockingStartPeer{release: make(chan struct{}), entered: make(chan struct{})}
+	r := newPeerTestBackend(t, &fake.fakePeerController)
+	r.peerClient = fake
+
+	onDone := make(chan error, 1)
+	go func() { onDone <- r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: true}) }()
+	<-fake.entered
+	offDone := make(chan error, 1)
+	go func() { offDone <- r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: false}) }()
+	time.Sleep(50 * time.Millisecond) // let the off queue on peerToggleMu
+	close(fake.release)
+	require.NoError(t, <-onDone)
+	require.NoError(t, <-offDone)
+
+	assert.False(t, settings.GetBool(settings.PeerShareEnabledKey))
+	assert.False(t, fake.IsActive())
+}
+
+type blockingStartPeer struct {
+	fakePeerController
+	release, entered chan struct{}
+}
+
+func (b *blockingStartPeer) Start(ctx context.Context) error {
+	close(b.entered)
+	<-b.release
+	return b.fakePeerController.Start(ctx)
+}
+
+// A second "on" that queued behind a Start must not fail with "already
+// active" and roll the toggle back under a running peer.
+func TestApplyPeerShare_EnableWhenActiveKeepsToggle(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+	fake.active.Store(true)
+
+	require.NoError(t, r.applyPeerShare(true))
+	assert.Zero(t, fake.startCalls.Load())
+	assert.True(t, settings.GetBool(settings.PeerShareEnabledKey))
+}
+
+func TestOnPeerSelfStop_ClearsToggleUnlessRestarted(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	fake.active.Store(true)
+	r.onPeerSelfStop(errors.New("route gone"))
+	assert.True(t, settings.GetBool(settings.PeerShareEnabledKey), "a peer restarted since the self-stop keeps the toggle")
+
+	fake.active.Store(false)
+	r.onPeerSelfStop(errors.New("route gone"))
+	assert.False(t, settings.GetBool(settings.PeerShareEnabledKey))
+}
+
+func TestPeerStatus_Accessor(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+
+	got := r.PeerStatus()
+	assert.True(t, got.Active)
+}
+
+func TestResumePeerShare_NoopWhenSettingOff(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+
+	r.resumePeerShareIfEnabled()
+	r.peerWG.Wait()
+	assert.Equal(t, int64(0), fake.startCalls.Load())
+}
+
+func TestResumePeerShare_StartsWhenSettingOn(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	r.resumePeerShareIfEnabled()
+	r.peerWG.Wait()
+	assert.Equal(t, int64(1), fake.startCalls.Load())
+	assert.True(t, fake.IsActive())
+}
+
+// Close must wait for an in-flight auto-resume Start before tearing down,
+// then call Stop on the active session — otherwise we leave a registered
+// route + open box behind on shutdown.
+func TestClose_WaitsForResumeAndStopsActivePeer(t *testing.T) {
+	startGate := make(chan struct{})
+	fake := &slowStartFake{gate: startGate}
+	r := newCloseableTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	r.resumePeerShareIfEnabled()
+
+	closeReturned := make(chan struct{})
+	go func() {
+		r.Close()
+		close(closeReturned)
+	}()
+
+	// Close must NOT return while the resume goroutine is still in Start.
+	select {
+	case <-closeReturned:
+		t.Fatal("Close returned before in-flight resume Start completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Release Start. It returns nil → peer becomes active. Close must then
+	// observe IsActive() and call Stop.
+	close(startGate)
+	select {
+	case <-closeReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after resume Start unblocked")
+	}
+	assert.Equal(t, int64(1), fake.startCalls.Load())
+	assert.Equal(t, int64(1), fake.stopCalls.Load())
+}
+
+// slowStartFake blocks on gate until the test releases it, simulating a
+// long UPnP discovery so we can race Close against Start.
+type slowStartFake struct {
+	startCalls atomic.Int64
+	stopCalls  atomic.Int64
+	active     atomic.Bool
+	gate       chan struct{}
+}
+
+func (f *slowStartFake) Start(ctx context.Context) error {
+	f.startCalls.Add(1)
+	select {
+	case <-f.gate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	f.active.Store(true)
+	return nil
+}
+func (f *slowStartFake) Stop(_ context.Context) error {
+	f.stopCalls.Add(1)
+	f.active.Store(false)
+	return nil
+}
+func (f *slowStartFake) IsActive() bool                   { return f.active.Load() }
+func (f *slowStartFake) CurrentStatus() peer.Status       { return peer.Status{Active: f.active.Load()} }
+func (f *slowStartFake) RelaySnapshot() peer.Snapshot     { return peer.Snapshot{} }
+func (f *slowStartFake) Reregister(context.Context) error { return nil }
+
+// newCloseableTestBackend mirrors newPeerTestBackend but provides the fields
+// Close needs (closeOnce, cancel) so we can exercise the shutdown path
+// end-to-end. vpnClient is left nil, which Close tolerates by design.
+func newCloseableTestBackend(t *testing.T, fake peerController) *LocalBackend {
+	t.Helper()
+	require.NoError(t, settings.InitSettings(t.TempDir()))
+	t.Cleanup(settings.Reset)
+	ctx, cancel := context.WithCancel(context.Background())
+	return &LocalBackend{
+		ctx:        ctx,
+		cancel:     cancel,
+		peerClient: fake,
+		closeOnce:  sync.Once{},
+	}
+}
+
+// Verify the PatchSettings dispatch actually routes PeerShareEnabledKey to
+// applyPeerShare. A typo on the diff key would silently break the toggle.
+func TestPatchSettings_PeerShareDispatches(t *testing.T) {
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: true}))
+	assert.Equal(t, int64(1), fake.startCalls.Load())
+	assert.True(t, fake.IsActive())
+
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: false}))
+	assert.Equal(t, int64(1), fake.stopCalls.Load())
+	assert.False(t, fake.IsActive())
+}
+
+// Verify PatchSettings routes UnboundedKey to unbounded.Apply via the
+// SetApplyHookForTest hook. A typo on the diff key or a removal of
+// the Apply call would silently leave the Unbounded toggle persisted
+// but inert. The hook fires regardless of the Enabled() gate inside
+// Apply, so this catches the dispatch even though we don't prime the
+// rest of the manager state.
+func TestPatchSettings_UnboundedDispatches(t *testing.T) {
+	r := newPeerTestBackend(t, &fakePeerController{})
+
+	var applyCalls atomic.Int32
+	unbounded.SetApplyHookForTest(func() { applyCalls.Add(1) })
+	t.Cleanup(func() { unbounded.SetApplyHookForTest(nil) })
+
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.UnboundedKey: true}))
+	assert.Equal(t, int32(1), applyCalls.Load(), "PatchSettings({UnboundedKey: true}) must dispatch to unbounded.Apply")
+
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.UnboundedKey: false}))
+	assert.Equal(t, int32(2), applyCalls.Load(), "PatchSettings({UnboundedKey: false}) must dispatch to unbounded.Apply")
+
+	// A PATCH without UnboundedKey must NOT trigger Apply — confirms
+	// the diff check is in place rather than always firing.
+	require.NoError(t, r.PatchSettings(settings.Settings{settings.PeerShareEnabledKey: false}))
+	assert.Equal(t, int32(2), applyCalls.Load(), "PatchSettings without UnboundedKey must not dispatch to unbounded.Apply")
+}
+
+// Construction degrades to a nil peerClient rather than failing, so that a
+// peer-client problem can never cost the user the ability to report an issue.
+// Everything reachable from IPC must tolerate that.
+
+func TestPeerStatus_NilClientReturnsZeroStatus(t *testing.T) {
+	r := newPeerTestBackend(t, nil)
+	r.peerClient = nil
+
+	var got peer.Status
+	require.NotPanics(t, func() { got = r.PeerStatus() },
+		"the IPC /peer/status handler calls this on every request")
+	assert.Equal(t, peer.Status{}, got)
+}
+
+func TestApplyPeerShare_NilClientReportsUnavailableAndRollsBack(t *testing.T) {
+	r := newPeerTestBackend(t, nil)
+	r.peerClient = nil
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	err := r.applyPeerShare(true)
+
+	require.Error(t, err, "enabling with no peer client must report the outage, not panic")
+	assert.ErrorContains(t, err, "peer share unavailable")
+	assert.False(t, settings.GetBool(settings.PeerShareEnabledKey),
+		"the setting must roll back so a persisted \"on\" doesn't survive with nothing behind it")
+}
+
+// withPeerShareUnsupported forces the platform gate on for one test. The real
+// predicate reads common.Platform, a constant, so the branch is unreachable on
+// the host that runs these tests.
+func withPeerShareUnsupported(t *testing.T) {
+	t.Helper()
+	prev := peerShareUnsupported
+	peerShareUnsupported = func() bool { return true }
+	t.Cleanup(func() { peerShareUnsupported = prev })
+}
+
+func TestApplyPeerShare_UnsupportedPlatformRefusesAndRollsBack(t *testing.T) {
+	withPeerShareUnsupported(t)
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	err := r.applyPeerShare(true)
+
+	require.Error(t, err, "enabling on an unsupported platform must report, not silently no-op")
+	assert.ErrorContains(t, err, "not supported")
+	assert.Zero(t, fake.startCalls.Load(), "the peer must never start on an unsupported platform")
+	assert.False(t, settings.GetBool(settings.PeerShareEnabledKey),
+		"the setting must roll back so a persisted \"on\" doesn't survive every restart")
+}
+
+func TestApplyPeerShare_UnsupportedPlatformDisableIsNoop(t *testing.T) {
+	withPeerShareUnsupported(t)
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+
+	assert.NoError(t, r.applyPeerShare(false), "turning it off where it never ran is not an error")
+	assert.Zero(t, fake.stopCalls.Load(), "nothing was started, so nothing needs stopping")
+}
+
+// TestResumePeerShare_UnsupportedPlatformDoesNotStart covers the auto-resume
+// path, which reaches Start through applyPeerShare rather than directly: a
+// setting persisted before the platform was excluded, or synced from another
+// device, would otherwise start a peer on every launch.
+func TestResumePeerShare_UnsupportedPlatformDoesNotStart(t *testing.T) {
+	withPeerShareUnsupported(t)
+	fake := &fakePeerController{}
+	r := newPeerTestBackend(t, fake)
+	require.NoError(t, settings.Patch(settings.Settings{settings.PeerShareEnabledKey: true}))
+
+	r.resumePeerShareIfEnabled()
+	r.peerWG.Wait()
+
+	assert.Zero(t, fake.startCalls.Load(), "auto-resume must not start a peer on an unsupported platform")
+	assert.False(t, settings.GetBool(settings.PeerShareEnabledKey),
+		"the stale setting is cleared on the way through")
+}
+
+func TestApplyPeerShare_NilClientDisableIsNoop(t *testing.T) {
+	r := newPeerTestBackend(t, nil)
+	r.peerClient = nil
+
+	require.NotPanics(t, func() {
+		assert.NoError(t, r.applyPeerShare(false),
+			"turning it off when it was never on is not an error")
+	})
+}
+
+func TestConnectVPN_ShedsConcurrentCalls(t *testing.T) {
+	r := &LocalBackend{}
+
+	// Simulate an in-flight connect holding the guard. TryLock is the first thing
+	// ConnectVPN does, so contended calls return before touching any dependency.
+	require.True(t, r.connectMu.TryLock())
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = r.ConnectVPN(context.Background(), vpn.AutoSelectTag)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		assert.ErrorIsf(t, err, ErrConnectInProgress, "call %d should be shed", i)
+	}
+
+	// The reject path must not release the guard; only the holder unlocks it.
+	r.connectMu.Unlock()
+	assert.True(t, r.connectMu.TryLock())
+}
+
+func TestBuildIssueReportMetadataFallsBackToSettings(t *testing.T) {
+	settings.Reset()
+	t.Cleanup(settings.Reset)
+	require.NoError(t, settings.InitSettings(t.TempDir()))
+	require.NoError(t, settings.Set(settings.CountryCodeKey, "IR"))
+	require.NoError(t, settings.Set(settings.DeviceIDKey, "device-123"))
+	require.NoError(t, settings.Set(settings.SplitTunnelKey, true))
+
+	meta := (*LocalBackend)(nil).buildIssueReportMetadata()
+
+	assert.Equal(t, "IR", meta.country)
+	assert.Equal(t, "device-123", meta.deviceID, "device ID must survive a backendless report")
+	assert.True(t, meta.splitTunnelEnabled, "split-tunnel state must survive a backendless report")
+	assert.NotNil(t, meta.reporter, "a reporter is always needed to upload the report")
+}
+
+func TestServerListFromConfig_ExcludesNonSelectable(t *testing.T) {
+	cfg := &config.Config{
+		Options: option.Options{
+			Outbounds: []option.Outbound{
+				{Tag: "proxy-1", Type: "shadowsocks"},
+				{Tag: "testing-out", Type: "testing"},
+			},
+			Endpoints: []option.Endpoint{
+				{Tag: "ep-1", Type: "wireguard"},
+				{Tag: "infra-ep", Type: "wireguard"},
+			},
+		},
+		NonSelectableOutbounds: []string{"testing-out", "infra-ep"},
+	}
+
+	list := serverListFromConfig(cfg)
+
+	gotTags := make([]string, 0, len(list.Servers))
+	for _, s := range list.Servers {
+		gotTags = append(gotTags, s.Tag)
+	}
+	assert.ElementsMatch(t, []string{"proxy-1", "ep-1"}, gotTags,
+		"non-selectable outbounds and endpoints must be excluded from the managed server list")
+}
+
+func TestNonSelectableOutboundsFromConfig(t *testing.T) {
+	cfg := &config.Config{
+		Options: option.Options{
+			Outbounds: []option.Outbound{
+				{Tag: "proxy-1", Type: "shadowsocks"},
+				{Tag: "testing-out", Type: "testing"},
+			},
+			Endpoints: []option.Endpoint{
+				{Tag: "infra-ep", Type: "wireguard"},
+			},
+		},
+		NonSelectableOutbounds: []string{"testing-out", "infra-ep"},
+	}
+
+	list := nonSelectableOutboundsFromConfig(cfg)
+
+	gotTags := make([]string, 0, len(list.Servers))
+	for _, s := range list.Servers {
+		gotTags = append(gotTags, s.Tag)
+	}
+	assert.ElementsMatch(t, []string{"testing-out"}, gotTags,
+		"only non-selectable outbounds are returned; selectable outbounds and non-selectable endpoints are excluded")
+	require.Len(t, list.Outbounds(), 1, "the returned server must decode as an outbound for the tunnel")
+}
+
+func TestLanternServerTags(t *testing.T) {
+	cfg := &config.Config{
+		Options: option.Options{
+			Outbounds: []option.Outbound{{Tag: "out-1"}, {Tag: "out-2"}},
+			Endpoints: []option.Endpoint{{Tag: "ep-1"}},
+		},
+	}
+
+	t.Run("config outbounds and endpoints are all lantern", func(t *testing.T) {
+		assert.ElementsMatch(t, []string{"out-1", "out-2", "ep-1"}, lanternServerTags(cfg, nil))
+	})
+
+	t.Run("managed servers included only when lantern", func(t *testing.T) {
+		managed := []*servers.Server{
+			{Tag: "lan-1", IsLantern: true},
+			{Tag: "user-1", IsLantern: false},
+		}
+		assert.Equal(t, []string{"lan-1"}, lanternServerTags(nil, managed))
+	})
+
+	t.Run("config and managed lantern tags are unioned and deduped", func(t *testing.T) {
+		managed := []*servers.Server{
+			{Tag: "out-1", IsLantern: true}, // duplicate of a config tag
+			{Tag: "lan-2", IsLantern: true},
+			{Tag: "user-1", IsLantern: false},
+		}
+		got := lanternServerTags(cfg, managed)
+		assert.ElementsMatch(t, []string{"out-1", "out-2", "ep-1", "lan-2"}, got)
+		assert.Len(t, got, 4, "the tag shared by config and managed must appear once")
+	})
+
+	t.Run("empty tags are skipped", func(t *testing.T) {
+		emptyCfg := &config.Config{Options: option.Options{Outbounds: []option.Outbound{{Tag: ""}}}}
+		assert.Empty(t, lanternServerTags(emptyCfg, []*servers.Server{{Tag: "", IsLantern: true}}))
+	})
+
+	t.Run("nil config and managed yields no tags", func(t *testing.T) {
+		assert.Empty(t, lanternServerTags(nil, nil))
+	})
+}
+
+// TestAwaitConnectable covers the gate that holds a too-early connect until
+// there is something to dial.
+//
+// A connect that arrives before the first config must wait for one instead of
+// failing. On iOS the process that reports "no outbounds" is the same process
+// hosting the config fetch, and its failure handler tears that process down —
+// a first-run deadlock on any slow network (getlantern/engineering#3814).
+func TestAwaitConnectable(t *testing.T) {
+	// newBackend builds a backend with only what awaitConnectable reads. A
+	// cached config on disk is how a returning user already has one at connect.
+	newBackend := func(t *testing.T, cached bool) *LocalBackend {
+		t.Helper()
+		dataDir := t.TempDir()
+		if cached {
+			buf, err := singjson.Marshal(cachedConfig())
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dataDir, internal.ConfigFileName), buf, 0o600))
+		}
+		settings.Reset()
+		t.Cleanup(settings.Reset)
+		require.NoError(t, settings.InitSettings(dataDir))
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		srvMgr, err := servers.NewManager(dataDir, log.NoOpLogger())
+		require.NoError(t, err)
+		return &LocalBackend{
+			ctx:         ctx,
+			confHandler: config.NewConfigHandler(ctx, config.Options{DataPath: dataDir, Logger: log.NoOpLogger()}),
+			srvManager:  srvMgr,
+		}
+	}
+
+	// The censored-network shape: the fetch completes, just not instantly.
+	t.Run("returns as soon as a config lands", func(t *testing.T) {
+		r := newBackend(t, false)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			events.Emit(config.NewConfigEvent{New: cachedConfig()})
+		}()
+
+		start := time.Now()
+		require.NoError(t, r.awaitConnectable(ctx, vpn.AutoSelectTag))
+		assert.Less(t, time.Since(start), 3*time.Second, "must return on the config, not on the deadline")
+	})
+
+	// events.Emit runs each callback on its own goroutine and SubscribeOnce gates
+	// on a plain atomic load, not a CAS, so simultaneous configs can both reach
+	// the subscription. Closing the ready channel twice would panic the process.
+	t.Run("survives several configs landing at once", func(t *testing.T) {
+		r := newBackend(t, false)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var emitters sync.WaitGroup
+		emitters.Add(1)
+		go func() {
+			defer emitters.Done()
+			// Ordering, not a timing assertion: the emits have to land after
+			// awaitConnectable has subscribed.
+			time.Sleep(150 * time.Millisecond)
+			var burst sync.WaitGroup
+			for range 8 {
+				burst.Add(1)
+				go func() {
+					defer burst.Done()
+					events.Emit(config.NewConfigEvent{New: cachedConfig()})
+				}()
+			}
+			burst.Wait()
+		}()
+		t.Cleanup(emitters.Wait)
+
+		require.NoError(t, r.awaitConnectable(ctx, vpn.AutoSelectTag))
+	})
+
+	t.Run("gives up on the caller's deadline rather than blocking forever", func(t *testing.T) {
+		r := newBackend(t, false)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		err := r.awaitConnectable(ctx, vpn.AutoSelectTag)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	// A cached config on disk is enough to connect: NewConfigHandler loads it
+	// synchronously, so a returning user's tunnel comes up on it without waiting
+	// for any fetch. The already-expired context proves nothing waited, and the
+	// box options prove the tunnel actually gets the cached outbounds.
+	t.Run("connects straight off the cached config on disk", func(t *testing.T) {
+		r := newBackend(t, true)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		require.NoError(t, r.awaitConnectable(ctx, vpn.AutoSelectTag))
+
+		tags := make([]string, 0, len(r.getBoxOptions().Options.Outbounds))
+		for _, out := range r.getBoxOptions().Options.Outbounds {
+			tags = append(tags, out.Tag)
+		}
+		assert.Contains(t, tags, "cached-out", "the tunnel must be built from the cached config")
+	})
+
+	// A user with their own server can dial it without a Lantern config, so the
+	// gate must not hold that connect hostage to a fetch it does not need.
+	t.Run("does not wait when the user has a server of their own", func(t *testing.T) {
+		r := newBackend(t, false)
+		require.NoError(t, r.srvManager.AddServers(
+			servers.ServerList{Servers: []*servers.Server{{Tag: "mine", Type: "shadowsocks"}}}, true))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		assert.NoError(t, r.awaitConnectable(ctx, vpn.AutoSelectTag), "auto-select can use the managed server")
+		assert.NoError(t, r.awaitConnectable(ctx, "mine"), "an explicit tag resolves without a config")
+	})
+}
+
+func TestSetCountryCodeFromConfigFollowsCorrections(t *testing.T) {
+	settings.Reset()
+	t.Cleanup(settings.Reset)
+	require.NoError(t, settings.InitSettings(t.TempDir()))
+
+	setCountryCodeFromConfig(&config.Config{Country: "US"})
+	assert.Equal(t, "US", settings.GetString(settings.CountryCodeKey))
+
+	setCountryCodeFromConfig(&config.Config{Country: "IR"})
+	assert.Equal(t, "IR", settings.GetString(settings.CountryCodeKey), "a later config corrects the country")
+
+	setCountryCodeFromConfig(&config.Config{})
+	assert.Equal(t, "IR", settings.GetString(settings.CountryCodeKey), "a config without a country keeps the last one")
+}
+
+func TestPatchSettings_ServePoolChangeReregistersARunningPeer(t *testing.T) {
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	require.NoError(t, b.PatchSettings(settings.Settings{settings.PeerServePoolKey: false}))
+	b.peerWG.Wait()
+	assert.Equal(t, int64(1), fake.reregisterCalls.Load())
+
+	require.NoError(t, b.PatchSettings(settings.Settings{settings.PeerServePoolKey: false}))
+	b.peerWG.Wait()
+	assert.Equal(t, int64(1), fake.reregisterCalls.Load(), "an unchanged value re-registers nothing")
+}
+
+func TestPatchSettings_ServePoolChangeLeavesAStoppedPeerAlone(t *testing.T) {
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	require.NoError(t, b.PatchSettings(settings.Settings{settings.PeerServePoolKey: false}))
+	b.peerWG.Wait()
+	assert.Zero(t, fake.reregisterCalls.Load())
+}
+
+// A patch that also turns sharing on registers once, through Start, with the
+// new value already persisted.
+func TestPatchSettings_ServePoolWithToggleOnDoesNotReregister(t *testing.T) {
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	require.NoError(t, b.PatchSettings(settings.Settings{
+		settings.PeerShareEnabledKey: true, settings.PeerServePoolKey: false}))
+	b.peerWG.Wait()
+	assert.Equal(t, int64(1), fake.startCalls.Load())
+	assert.Zero(t, fake.reregisterCalls.Load())
+}
+
+// A patch that turns sharing on for a peer already running starts nothing,
+// so its serve-pool change still has to re-register.
+func TestPatchSettings_ServePoolWithToggleOnForARunningPeerReregisters(t *testing.T) {
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	require.NoError(t, b.PatchSettings(settings.Settings{
+		settings.PeerShareEnabledKey: true, settings.PeerServePoolKey: false}))
+	b.peerWG.Wait()
+	assert.Zero(t, fake.startCalls.Load())
+	assert.Equal(t, int64(1), fake.reregisterCalls.Load())
+}
+
+func TestReregisterPeer_SkipsAClosedBackend(t *testing.T) {
+	fake := &fakePeerController{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	b := &LocalBackend{ctx: ctx, peerClient: fake}
+	fake.active.Store(true)
+	b.reregisterPeer()
+	b.peerWG.Wait()
+	assert.Zero(t, fake.reregisterCalls.Load())
+}
+
+// Once closePeerClient has begun waiting, a re-register starts nothing, even
+// before Close cancels the backend's context.
+func TestReregisterPeer_AfterCloseStartsNothing(t *testing.T) {
+	fake := &fakePeerController{}
+	b := newCloseableTestBackend(t, fake)
+	fake.active.Store(true)
+	b.closePeerClient()
+	fake.active.Store(true)
+	b.reregisterPeer()
+	b.peerWG.Wait()
+	assert.Zero(t, fake.reregisterCalls.Load())
+}
+
+// setReregisterBackoff shortens or lengthens the re-register retry for a test.
+func setReregisterBackoff(t *testing.T, first, longest time.Duration) {
+	prevFirst, prevMax := reregisterRetryFirst, reregisterRetryMax
+	reregisterRetryFirst, reregisterRetryMax = first, longest
+	t.Cleanup(func() { reregisterRetryFirst, reregisterRetryMax = prevFirst, prevMax })
+}
+
+// waitPeerWork waits for the backend's background peer work, failing the
+// test if it does not finish.
+func waitPeerWork(t *testing.T, b *LocalBackend) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { b.peerWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("peer work did not finish")
+	}
+}
+
+var errUnreachable = errors.New("lantern-cloud unreachable")
+
+func TestReregisterPeer_RetriesUntilItSucceeds(t *testing.T) {
+	setReregisterBackoff(t, time.Millisecond, 4*time.Millisecond)
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	fake.setReregister(func(_ context.Context, n int64) error {
+		if n < 3 {
+			return errUnreachable
+		}
+		return nil
+	})
+	b.reregisterPeer()
+	waitPeerWork(t, b)
+	assert.Equal(t, int64(3), fake.reregisterCalls.Load())
+}
+
+func TestReregisterPeer_StopsWhenThePeerStops(t *testing.T) {
+	setReregisterBackoff(t, time.Millisecond, time.Millisecond)
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	fake.setReregister(func(context.Context, int64) error { return peer.ErrNotActive })
+	b.reregisterPeer()
+	waitPeerWork(t, b)
+	assert.Equal(t, int64(1), fake.reregisterCalls.Load())
+}
+
+// Close cancels a retry waiting out its backoff, so it neither hangs Close nor
+// outlives the backend.
+func TestReregisterPeer_CloseEndsTheRetry(t *testing.T) {
+	setReregisterBackoff(t, time.Hour, time.Hour)
+	fake := &fakePeerController{}
+	b := newCloseableTestBackend(t, fake)
+	fake.active.Store(true)
+	fake.setReregister(func(context.Context, int64) error { return errUnreachable })
+	b.reregisterPeer()
+	require.Eventually(t, func() bool { return fake.reregisterCalls.Load() == 1 }, time.Second, time.Millisecond)
+	closed := make(chan struct{})
+	go func() { b.closePeerClient(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited out the backoff")
+	}
+	assert.Equal(t, int64(1), fake.reregisterCalls.Load())
+}
+
+// Only the latest request's retry keeps running: a newer toggle cancels the
+// older loop, which would otherwise sit in its hour-long backoff.
+func TestReregisterPeer_ANewerRequestSupersedesTheRetry(t *testing.T) {
+	setReregisterBackoff(t, time.Hour, time.Hour)
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	fake.setReregister(func(context.Context, int64) error { return errUnreachable })
+	b.reregisterPeer()
+	require.Eventually(t, func() bool { return fake.reregisterCalls.Load() == 1 }, time.Second, time.Millisecond)
+	fake.setReregister(func(context.Context, int64) error { return nil })
+	b.reregisterPeer()
+	waitPeerWork(t, b)
+	assert.Equal(t, int64(2), fake.reregisterCalls.Load())
+}
+
+// Turning sharing off ends a pending retry: the session it was for is gone,
+// and a new session's Start has registered the current setting already.
+func TestReregisterPeer_StopAndStartEndTheRetry(t *testing.T) {
+	setReregisterBackoff(t, 50*time.Millisecond, 50*time.Millisecond)
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	fake.setReregister(func(context.Context, int64) error { return errUnreachable })
+	b.reregisterPeer()
+	require.Eventually(t, func() bool { return fake.reregisterCalls.Load() == 1 }, time.Second, time.Millisecond)
+	require.NoError(t, b.applyPeerShare(false))
+	require.NoError(t, b.applyPeerShare(true))
+	waitPeerWork(t, b)
+	assert.Never(t, func() bool { return fake.reregisterCalls.Load() > 1 }, 200*time.Millisecond, 5*time.Millisecond,
+		"the stale retry never reaches the new session")
+}
+
+// Close stops the activity ticker and flushes before it returns, so the file
+// does not change afterwards.
+func TestClose_NoActivitySaveAfterItReturns(t *testing.T) {
+	fake := &fakePeerController{}
+	b := newCloseableTestBackend(t, fake)
+	path := filepath.Join(t.TempDir(), "helper-activity.json")
+	b.helperActivity = helper.NewActivityTracker(path, func() (bool, string, uint64) { return true, "e", 0 })
+	go b.helperActivity.Run(b.ctx, time.Millisecond)
+	require.Eventually(t, func() bool { _, err := os.Stat(path); return err == nil }, time.Second, time.Millisecond)
+	b.Close()
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after))
+}
+
+// A newer toggle supersedes the retry loop, not the attempt already running:
+// cancelling that could abort a rotation between its register and its box
+// rebuild and stop sharing.
+func TestReregisterPeer_ANewerRequestLetsTheRunningAttemptFinish(t *testing.T) {
+	setReregisterBackoff(t, time.Hour, time.Hour)
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	started := make(chan context.Context, 1)
+	release := make(chan struct{})
+	fake.setReregister(func(ctx context.Context, n int64) error {
+		if n == 1 {
+			started <- ctx
+			<-release
+		}
+		return nil
+	})
+	b.reregisterPeer()
+	first := <-started
+	b.reregisterPeer()
+	assert.Never(t, func() bool { return first.Err() != nil }, 30*time.Millisecond, time.Millisecond,
+		"the running attempt is not cancelled")
+	close(release)
+	waitPeerWork(t, b)
+	assert.Equal(t, int64(2), fake.reregisterCalls.Load(), "the newer request's attempt runs after it")
+}
+
+// Turning sharing off cancels a running attempt at once rather than waiting
+// for it under the toggle lock.
+func TestReregisterPeer_TurningOffCancelsTheRunningAttempt(t *testing.T) {
+	setReregisterBackoff(t, time.Hour, time.Hour)
+	fake := &fakePeerController{}
+	b := newPeerTestBackend(t, fake)
+	fake.active.Store(true)
+	started := make(chan struct{})
+	fake.setReregister(func(ctx context.Context, n int64) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	b.reregisterPeer()
+	<-started
+	done := make(chan error, 1)
+	go func() { done <- b.applyPeerShare(false) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("turning sharing off waited for the attempt")
+	}
+	waitPeerWork(t, b)
+}

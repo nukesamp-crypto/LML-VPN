@@ -1,0 +1,89 @@
+{
+  "name": "lml-vpn",
+  "version": "1.0.1",
+  "description": "LML VPN — desktop connections and TheFeed",
+  "author": "LML VPN",
+  "license": "GPL-3.0-or-later",
+  "main": "main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win nsis --x64",
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "jsdom": "^26.1.0"
+  },
+  "build": {
+    "appId": "com.lmlvpn.desktop",
+    "productName": "LML VPN",
+    "copyright": "Copyright © 2026 LML VPN contributors",
+    "asar": true,
+    "directories": {
+      "output": "release-output",
+      "buildResources": "resources"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "lib/**/*.cjs",
+      "app/**/*",
+      "package.json",
+      "resources/icon.ico"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin"
+      },
+      {
+        "from": "resources/licenses",
+        "to": "licenses"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.ico",
+      "signExecutable": false
+    },
+    "nsis": {
+      "artifactName": "LML-VPN-Setup-${version}.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico",
+      "shortcutName": "LML VPN",
+      "license": "resources/license.txt",
+      "differentialPackage": false,
+      "perMachine": true,
+      "include": "resources/installer.nsh",
+      "runAfterFinish": true
+    },
+    "electronLanguages": [
+      "en-US",
+      "fa"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "nukesamp-crypto",
+        "repo": "LML-VPN",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
+  }
+}

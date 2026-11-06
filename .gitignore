@@ -1,0 +1,21 @@
+# Local dependencies and build output
+**/node_modules/
+**/release-output/
+**/.cache/
+*.log
+
+# User settings, credentials and local signing material
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.jks
+*.keystore
+
+# Large Windows runtime binaries: built/fetched separately
+/windows/resources/bin/*.exe
+/windows/resources/bin/*.dll
+/windows/resources/bin/geoip.dat
+/windows/resources/bin/geosite.dat
+/windows/resources/bin/*.download
