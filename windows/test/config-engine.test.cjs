@@ -10,7 +10,7 @@ test('real local VLESS traffic flows through pinned Xray and private session fil
  const file=path.join(dir,'server.json');await fs.writeFile(file,JSON.stringify(serverCfg));const server=spawn(bin,['run','-c',file],{stdio:'ignore'});t.after(()=>server.kill());await wait(300);
  const c=parseLink(`vless://${id}@127.0.0.1:${port}?security=none&type=tcp`,{allowLocal:true});
  const engine=new ConfigEngine({binDir:dir,dataDir:dir,devBinary:bin,proxy:{activate:async()=>{},restore:async()=>{}}});t.after(()=>engine.stop());
- const status=await engine.start(c,{systemProxy:false});assert.equal(status.state,'connected');
+ const status=await engine.start(c,{systemProxy:false});assert.equal(status.state,'connected');assert.equal(status.name,'LML VPN');
  const body=await new Promise((resolve,reject)=>{const req=http.get({host:'127.0.0.1',port:status.httpPort,path:`http://127.0.0.1:${target.address().port}/`,timeout:5000},res=>{let b='';res.on('data',x=>b+=x);res.on('end',()=>resolve(b));});req.on('error',reject);req.on('timeout',()=>req.destroy(Error('timeout')));});
  assert.equal(body,'LOCAL VLESS OK');await engine.stop();await assert.rejects(fs.stat(path.join(dir,'config-engine','session.json')),{code:'ENOENT'});
 });

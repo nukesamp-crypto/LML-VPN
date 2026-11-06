@@ -239,24 +239,29 @@
     $('#config-count').textContent=`${all.length.toLocaleString('fa-IR')} مورد`;
     $('#config-note').textContent=configData.refreshing?(configData.note||'در حال دریافت کانال‌ها…'):(configData.note||'برای دریافت کانفیگ به‌روزرسانی را بزن.');
     $('#config-refresh').disabled=!!configData.refreshing||probeState.running;
+    const order=new Map(all.map((c,i)=>[c.id,i+1]));
     const target=$('#config-list'),scrollTop=target.scrollTop;target.replaceChildren();
     for(const c of list.slice(0,1000)){
       const row=document.createElement('div');row.className='config-item'+(selectedConfig===c.id?' selected':'');
-      const button=document.createElement('button');button.className='config-pick';button.dataset.configId=c.id;button.setAttribute('aria-label','انتخاب '+c.name);
+      const button=document.createElement('button');button.className='config-pick';button.dataset.configId=c.id;button.setAttribute('aria-label',`انتخاب ${c.name} شماره ${order.get(c.id)}، ${c.source||''}`);
       const flag=document.createElement('span');flag.className='config-flag';
       if(/^[A-Z]{2}$/.test(c.countryCode||'')){
         const img=document.createElement('img');img.src=`assets/flags/${c.countryCode.toLowerCase()}.svg`;img.alt=c.countryCode;
         img.addEventListener('error',()=>{flag.textContent='◌';});flag.append(img);
         flag.title=c.countrySource==='ip'?'کشور تقریبی IP ورودی؛ الزاماً کشور خروجی نیست.':'پرچم اعلام‌شده در نام کانفیگ؛ تأیید موقعیت نیست.';
       }else{flag.textContent='◌';flag.title='کشور مشخص نیست';}
-      const info=document.createElement('span');info.className='config-item-main';const title=document.createElement('b');title.textContent=c.name;
+      const info=document.createElement('span');info.className='config-item-main';const title=document.createElement('b');title.textContent=c.name;const index=document.createElement('span');index.className='config-index';index.textContent=`#${order.get(c.id)}`;title.append(' ',index);
       const sub=document.createElement('small');sub.textContent=`${c.source||''}  ·  ${c.network||''} / ${c.security||''}${c.insecure?'  ·  ⚠ TLS':''}`;if(c.insecure)sub.className='unsafe';
       info.append(title,sub);const latency=document.createElement('span');latency.className='latency'+(c.latency===-1?' failed':'');latency.textContent=c.latency===-1?'ناموفق':(Number.isFinite(c.latency)&&c.latency>=0?`${Math.round(c.latency)} ms`:'—');
       const badge=document.createElement('span');badge.className='protocol';badge.textContent=c.scheme;button.append(flag,info,latency,badge);
-      const remove=document.createElement('button');remove.className='config-delete';remove.dataset.removeConfig=c.id;remove.type='button';remove.title='حذف کانفیگ';remove.setAttribute('aria-label',`حذف ${c.name}`);remove.textContent='×';row.append(button,remove);target.append(row);
+      const remove=document.createElement('button');remove.className='config-delete';remove.dataset.removeConfig=c.id;remove.type='button';remove.title='حذف کانفیگ';remove.setAttribute('aria-label',`حذف ${c.name} شماره ${order.get(c.id)}`);remove.textContent='×';row.append(button,remove);target.append(row);
     }
     target.scrollTop=scrollTop;
-    const chosen=all.find(x=>x.id===selectedConfig);$('#config-selected').textContent=chosen?`${chosen.name} — ${chosen.source}`:'هنوز کانفیگی انتخاب نشده است.';
+    const chosen=all.find(x=>x.id===selectedConfig),selected=$('#config-selected');selected.replaceChildren();
+    if(chosen){
+      const name=document.createElement('strong');name.className='selected-name';name.dir='ltr';name.textContent=`${chosen.name} · #${order.get(chosen.id)}`;
+      const source=document.createElement('small');source.className='selected-source';source.textContent=`منبع: ${chosen.source||'—'}`;selected.append(name,source);
+    }else selected.textContent='هنوز کانفیگی انتخاب نشده است.';
     const st=snap?.configConnection||{state:'disconnected',detail:'آمادهٔ انتخاب کانفیگ'};
     $('#config-state').textContent=(st.detail||'')+(st.state==='connected'&&Number.isFinite(st.pingMs)&&st.pingMs>=0?` · ${Math.round(st.pingMs)} ms`:'');
     const isActive=['connecting','connected','disconnecting'].includes(st.state);

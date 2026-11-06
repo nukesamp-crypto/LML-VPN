@@ -4,6 +4,8 @@
 const crypto=require('node:crypto');
 const net=require('node:net');
 const MAX_LINK=8192;
+// Public channel names are retained internally for source/flag metadata only.
+const PUBLIC_CONFIG_NAME='LML VPN';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CIPHERS=new Set(['aes-128-gcm','aes-256-gcm','chacha20-poly1305','xchacha20-poly1305','2022-blake3-aes-128-gcm','2022-blake3-aes-256-gcm','2022-blake3-chacha20-poly1305','none','plain']);
 const trimText=(x,n=300)=>String(x??'').replace(/[\x00-\x1f\x7f]/g,'').slice(0,n);
@@ -119,5 +121,5 @@ function extractLinks(text,source){
     try{const c=parseLink(raw);if(!seen.has(c.id)){seen.add(c.id);found.push({...c,source:trimText(source,50)});}}catch{}
   }return found;
 }
-function publicEntry(c){return {id:c.id,scheme:c.scheme.toUpperCase(),name:trimText(c.remark||`${c.scheme.toUpperCase()} · ${c.address}`,150),source:c.source,network:c.transport.network,security:c.transport.security,insecure:c.tls.insecure};}
-module.exports={parseLink,buildXray,extractLinks,publicEntry,safeHost};
+function publicEntry(c){return {id:c.id,scheme:c.scheme.toUpperCase(),name:PUBLIC_CONFIG_NAME,source:c.source,network:c.transport.network,security:c.transport.security,insecure:c.tls.insecure};}
+module.exports={parseLink,buildXray,extractLinks,publicEntry,safeHost,PUBLIC_CONFIG_NAME};

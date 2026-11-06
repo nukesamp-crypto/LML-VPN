@@ -8,7 +8,7 @@ const {spawn,execFile}=require('node:child_process');
 const {promisify}=require('node:util');
 const {performance}=require('node:perf_hooks');
 const {sha256}=require('./thefeed.cjs');
-const {buildXray}=require('./config-links.cjs');
+const {buildXray,PUBLIC_CONFIG_NAME}=require('./config-links.cjs');
 const exec=promisify(execFile);
 const XRAY_SHA256='3cd61d792040a553614f6995ed74c5a0a2c98e3caf0edbe6e72e58694f490f39';
 const CRONET_SHA256='3217c6260fbca5f16072e0b79735742f40109a63bb0ff88fd6b96dd6b54a2928';
@@ -61,7 +61,7 @@ class ConfigEngine {
     if(this.active())throw new Error('ابتدا اتصال کانفیگ فعلی را قطع کن.');
     if(!c)throw new Error('یک کانفیگ را انتخاب کن.');
     if(this.platform!=='win32'&&!this.devBinary)throw new Error('اتصال کانفیگ در این نسخه فقط برای ویندوز است.');
-    const generation=++this.generation;this.busy=true;this.set('connecting','در حال آماده‌سازی هستهٔ اتصال…',{httpPort:0,socksPort:0,tested:null,name:c.remark||c.scheme.toUpperCase(),id:c.id||'',pingMs:null});
+    const generation=++this.generation;this.busy=true;this.set('connecting','در حال آماده‌سازی هستهٔ اتصال…',{httpPort:0,socksPort:0,tested:null,name:PUBLIC_CONFIG_NAME,id:c.id||'',pingMs:null});
     const exe=this.devBinary||path.join(this.binDir,'xray-windows.exe');
     const check=()=>{if(generation!==this.generation)throw new Error('اتصال لغو شد.');};
     try{

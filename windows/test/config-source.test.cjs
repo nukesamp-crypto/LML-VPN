@@ -97,3 +97,21 @@ test('DNS feed can use more than twenty channels supplied by its own profile',as
  const source=new DnsFeedSource({executable:'none',dataDir:dir,expectedHash:null});source.init=async()=>endpoint;t.after(()=>source.stop());
  const entries=await source.fetch();assert.equal(entries.length,30);assert(entries.every(x=>x.source.includes('DNS/فید')));assert(entries.some(x=>x.source.includes('@feed30')));
 });
+
+test('fresh and cached configs share the LML VPN name but retain unique IDs, original raw links, country, source and ping',async t=>{
+ const rawA=`vless://11111111-1111-4111-8111-111111111111@a.example.com:443?security=tls#%F0%9F%87%A9%F0%9F%87%AA%20First`;
+ const rawB=`vless://22222222-2222-4222-8222-222222222222@b.example.com:443?security=tls#%F0%9F%87%B3%F0%9F%87%B1%20Second`;
+ const a={...parseLink(rawA),source:'@same · وب'},b={...parseLink(rawB),source:'@same · وب'};
+ const s=await fixture(t,{fetchTelegram:async name=>name===CHANNELS[0]?[a,b]:[]});
+ let result=await s.refresh();assert.equal(result.items.length,2);
+ assert(result.items.every(item=>item.name==='LML VPN'&&item.source==='@same · وب'));
+ assert.notEqual(result.items[0].id,result.items[1].id);
+ assert.deepEqual(result.items.map(x=>x.countryCode),['DE','NL']);assert(result.items.every(x=>x.countrySource==='label'));
+ assert.equal(s.get(a.id).raw,rawA);assert.equal(s.get(a.id).remark,'🇩🇪 First');assert.equal(s.get(b.id).raw,rawB);
+ s.setLatency(a.id,123);s.setLatency(b.id,77);result=s.snapshot();assert.deepEqual(result.items.map(x=>x.latency),[123,77]);
+ const saved=JSON.parse(await fs.readFile(s.file,'utf8'));assert.deepEqual(saved.links.map(x=>x.raw),[rawA,rawB]);
+ const again=await fixture(t);again.file=s.file;await again.load();const cached=again.snapshot();
+ assert(cached.items.every(x=>x.name==='LML VPN'));assert.deepEqual(cached.items.map(x=>x.id),[a.id,b.id]);
+ assert.deepEqual(cached.items.map(x=>x.countryCode),['DE','NL']);assert.equal(again.get(a.id).raw,rawA);
+ await again.remove(a.id);assert.equal(again.snapshot().items.length,1);assert.equal(again.snapshot().items[0].id,b.id);
+});

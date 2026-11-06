@@ -16,7 +16,7 @@ function fakeParts(){
  return {calls,chain,xray,hop,px,gate,get proxy(){return proxy}};
 }
 for(const mode of ['psiphon-via-xray','xray-via-psiphon'])test(`${mode} starts hops in correct order and cleans up`,async()=>{
- const f=fakeParts();const immediate=f.chain.start({scheme:'vless'},{mode,settings:DEFAULTS,systemProxy:true});assert.equal(immediate.state,'connecting');
+ const f=fakeParts();const immediate=f.chain.start({scheme:'vless'},{mode,settings:DEFAULTS,systemProxy:true});assert.equal(immediate.state,'connecting');assert.equal(immediate.name,'LML VPN');
  await until(()=>f.chain.snapshot().tested===true);assert.equal(f.chain.snapshot().state,'connected');
  if(mode==='psiphon-via-xray'){
   assert.equal(f.calls[0][0],'xray');assert.equal(f.calls[1][0],'hop');assert.equal(f.calls[1][1].upstreamHttpPort,3011);assert.deepEqual(f.calls[2],['activate',3021]);

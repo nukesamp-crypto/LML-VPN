@@ -40,3 +40,13 @@ test('supported examples pass the exact ZedSecure-pinned Xray binary config chec
   await promisify(execFile)(process.env.LML_XRAY_TEST_BIN,['run','-test','-c',file],{timeout:10000});
  }
 });
+
+test('every protocol has the same display name without changing its raw link, identity, or connection settings',()=>{
+ const links=[vless,vmess,trojan,ss,xhttp];const ids=new Set();
+ for(const raw of links){
+  const c=parseLink(raw),before=buildXray(c,11111,11112),visible=publicEntry({...c,source:'@channel · وب'});
+  assert.equal(visible.name,'LML VPN');assert.equal(visible.id,c.id);assert.equal(c.raw,raw);assert.equal(visible.source,'@channel · وب');
+  assert.deepEqual(buildXray(c,11111,11112),before);assert(c.remark);ids.add(visible.id);
+ }
+ assert.equal(ids.size,links.length);
+});

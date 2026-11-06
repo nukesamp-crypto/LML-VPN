@@ -2,6 +2,7 @@
 // Two explicit local process chains using the application's existing cores.
 // The last local HTTP listener owns system proxy; no remote peer sees it.
 const {verifyThroughProxy}=require('./config-engine.cjs');
+const {PUBLIC_CONFIG_NAME}=require('./config-links.cjs');
 const {performance}=require('node:perf_hooks');
 const MODES=new Set(['psiphon-via-xray','xray-via-psiphon']);
 class ChainEngine {
@@ -18,7 +19,7 @@ class ChainEngine {
     if(this.active()||this.xray.active())throw new Error('ابتدا اتصال فعلی را قطع کن.');
     if(!MODES.has(mode))throw new Error('حالت زنجیره معتبر نیست.');
     const generation=++this.generation;
-    this.set('connecting','در حال آماده‌سازی دو مسیر اتصال…',{mode,name:config?.remark||config?.scheme?.toUpperCase()||'',id:config?.id||'',tested:null,pingMs:null,httpPort:0,socksPort:0});
+    this.set('connecting','در حال آماده‌سازی دو مسیر اتصال…',{mode,name:PUBLIC_CONFIG_NAME,id:config?.id||'',tested:null,pingMs:null,httpPort:0,socksPort:0});
     // Return immediately: UI can cancel a slow Psiphon handshake.
     const job=this._start(generation,config,{mode,settings,systemProxy,routing});this.startJob=job;
     job.then(()=>{if(this.startJob===job)this.startJob=null;},()=>{if(this.startJob===job)this.startJob=null;});

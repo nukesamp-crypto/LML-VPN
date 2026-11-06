@@ -160,3 +160,16 @@ test('config list shows country metadata and deletes an untested row individuall
  assert(calls.some(x=>x.method==='configsRemove'&&x.data.id==='a'.repeat(24)));assert.equal(window.document.querySelectorAll('.config-item').length,1);
  assert.equal(window.document.querySelector('#config-remove-failed').disabled,false);dom.window.close();
 });
+
+test('same-name configurations remain separately numbered, selectable and connect by their unique ID',async()=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});const {window}=dom,calls=[];window.scrollTo=()=>{};window.setInterval=()=>0;
+ const snap={settings:{engine:'shiro',systemProxy:false,cdnIPs:'',autoStart:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'},configConnection:{state:'disconnected'}};
+ const items=['a','b'].map((v,i)=>({id:v.repeat(24),name:'LML VPN',source:'@same · وب',scheme:'VLESS',network:'tcp',security:'tls',latency:50+i,countryCode:'DE',countrySource:'label'}));
+ window.lml={platform:'windows',invoke:async(method,data)=>{calls.push({method,data});if(method==='snapshot')return snap;if(method==='configsList'||method==='configsRefresh')return {items};return snap;}};
+ window.eval(js);await wait();window.document.querySelector('[data-nav="configs"]').click();await wait();
+ const rows=window.document.querySelectorAll('.config-item');assert.equal(rows.length,2);
+ assert.equal(rows[0].querySelector('b').textContent,'LML VPN #1');assert.equal(rows[1].querySelector('b').textContent,'LML VPN #2');
+ rows[1].querySelector('[data-config-id]').click();assert.match(window.document.querySelector('#config-selected').textContent,/LML VPN · #2/);
+ window.document.querySelector('#config-connect').click();await wait();assert(calls.some(x=>x.method==='configsConnect'&&x.data.id==='b'.repeat(24)));
+ dom.window.close();
+});
