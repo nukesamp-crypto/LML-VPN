@@ -34,6 +34,8 @@ test('dashboard country selector uses the chosen engine’s actual list',async()
   assert.equal(d.querySelector('#add-private'),null);
   assert(!d.body.textContent.includes('موتورهای داخلی'));
   assert(d.body.textContent.includes('v1.0.1'));
+  assert.equal(d.querySelector('#platform-note').textContent,'نسخهٔ برنامه');
+  assert(!d.body.textContent.includes('نسخهٔ ویندوز'));
   d.querySelector('[data-engine="lantern"]').click(); await wait(); await wait();
   assert.deepEqual(Array.from(select.options,x=>x.value),['','actual-de-tag','actual-us-tag']);
   select.value='actual-de-tag';select.dispatchEvent(new window.Event('change',{bubbles:true}));await wait();
