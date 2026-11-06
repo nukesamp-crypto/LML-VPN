@@ -54,3 +54,9 @@ test('real Psiphon traffic can pass through a local Xray VLESS hop',{skip:!proce
  await chain.stop();assert.equal(hop.active(),false);assert.equal(xray.active(),false);
  await assert.rejects(fs.stat(path.join(dir,'psiphon-chain','chain-config.json')),{code:'ENOENT'});
 });
+
+test('a verified chain reports measured latency and a connection start time',async()=>{
+ const f=fakeParts();const now=Date.now();f.chain.start({scheme:'vless',id:'a'.repeat(24)},{mode:'xray-via-psiphon',settings:DEFAULTS,systemProxy:false});
+ await until(()=>f.chain.snapshot().tested===true);const s=f.chain.snapshot();assert(s.connectedAt>=now);assert(Number.isInteger(s.pingMs)&&s.pingMs>=1);assert.equal(s.id,'a'.repeat(24));
+ await f.chain.stop();assert.equal(f.chain.snapshot().connectedAt,null);assert.equal(f.chain.snapshot().pingMs,null);
+});

@@ -87,15 +87,6 @@ test('startup preserves a corrupt profile and succeeds after repair',{skip:!proc
  }finally{await c.stop();await fs.rm(dir,{recursive:true,force:true});}
 });
 
-test('an unusable cached update falls back to the pinned core',{skip:!process.env.LML_FEED_TEST_BIN},async()=>{
- const dir=await fs.mkdtemp(path.join(os.tmpdir(),'lml-feed-fallback-'));
- const bad=path.join(dir,'unusable.exe');await fs.writeFile(bad,'not executable');let invalidated=false;
- const updater={cached:async()=>({path:bad,version:'v99.0.0',sha256:'x'}),invalidate:async()=>{invalidated=true;},cancel:()=>{}};
- const c=new ThefeedController({executable:process.env.LML_FEED_TEST_BIN,dataDir:path.join(dir,'feed'),expectedHash:null,updater});
- try{const endpoint=await c.start();assert.equal(endpoint.version,RELEASE);assert(invalidated);}
- finally{await c.stop();await fs.rm(dir,{recursive:true,force:true});}
-});
-
 test('quitting during the temporary core inspection kills that process',{skip:!process.env.LML_FEED_TEST_BIN},async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'lml-feed-inspect-cancel-'));
  const c=new ThefeedController({executable:process.env.LML_FEED_TEST_BIN,dataDir:dir,expectedHash:null,timeout:15000});

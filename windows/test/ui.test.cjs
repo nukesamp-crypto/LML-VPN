@@ -83,7 +83,9 @@ test('TheFeed entry opens inside the main navigation without connecting a VPN',a
  window.eval(js);await wait();
  window.document.querySelector('[data-nav="feed"]').click();await wait();
  assert(window.document.querySelector('[data-page="feed"]').classList.contains('active'));
- assert(window.document.querySelector('[data-nav="feed"]').textContent.includes('تلگرام (سارتو)'));
+ assert(window.document.querySelector('[data-nav="feed"]').textContent.includes('تلگرام (The Feed)'));
+ assert(!calls.includes('openFeed'));assert(!window.document.querySelector('#feed-credit').classList.contains('hidden'));
+ await new Promise(resolve=>setTimeout(resolve,2050));assert(calls.includes('openFeed'));assert(window.document.querySelector('#feed-credit').classList.contains('hidden'));
  window.document.querySelector('[data-nav="home"]').click();await wait();assert(calls.includes('hideFeed'));
  assert(calls.includes('openFeed'));assert(!calls.includes('connect'));assert(!calls.includes('selectEngine'));
  dom.window.close();
@@ -127,7 +129,7 @@ test('config section offers separate direct and two chain modes and starts the s
  window.document.querySelector('[data-config-id]').click();const sel=window.document.querySelector('#config-mode');sel.value='xray-via-psiphon';sel.dispatchEvent(new window.Event('change'));
  window.document.querySelector('#config-connect').click();await wait();assert(calls.some(x=>x.method==='configsConnect'&&x.data.mode==='xray-via-psiphon'));
  window.document.querySelector('#config-connect').click();await wait();assert(calls.some(x=>x.method==='configsDisconnect'));
- assert(calls.some(x=>x.method==='configsRefresh'));assert.equal(window.document.querySelector('#config-manual'),null);assert.equal(window.document.querySelector('#config-add'),null);assert.equal(window.document.querySelector('#subscription-url'),null);assert(window.document.querySelector('[data-nav="engines"]').textContent.includes('لنترن'));
+ assert(calls.some(x=>x.method==='configsRefresh'));assert.equal(window.document.querySelector('#config-manual'),null);assert.equal(window.document.querySelector('#config-add'),null);assert.equal(window.document.querySelector('#subscription-url'),null);assert(window.document.querySelector('[data-nav="engines"]').textContent.includes('آی‌پی شیر و خورشید'));
  dom.window.close();
 });
 
@@ -136,4 +138,25 @@ test('Telegram channel button opens only the whitelisted channel key',async()=>{
  const snapshot={settings:{engine:'shiro',systemProxy:false,cdnIPs:'',sniNames:'',autoStart:false,region:'',lanternTag:''},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'}};
  window.lml={platform:'windows',invoke:async(method,data)=>{calls.push({method,data});if(method==='snapshot')return snapshot;return true;}};
  window.eval(js);await wait();window.document.querySelector('.channel-card').click();await wait();assert(calls.some(x=>x.method==='openLink'&&x.data.key==='channel'));dom.window.close();
+});
+
+test('connection duration and measured HTTPS latency are displayed without inventing pings',async()=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});const {window}=dom;let tick;window.scrollTo=()=>{};window.setInterval=fn=>{tick=fn;return 0;};window.Date.now=()=>10000000;
+ const snapshot={settings:{engine:'shiro',systemProxy:true,cdnIPs:'',autoStart:false},shiro:{state:'connected',detail:'ready',regions:[],connectedAt:9990000,pingMs:123},lantern:{state:'disconnected'}};
+ window.lml={platform:'windows',invoke:async method=>method==='snapshot'?snapshot:{items:[]}};window.eval(js);await wait();
+ assert.equal(window.document.querySelector('#connection-timer').textContent,'00:00:10');assert.equal(window.document.querySelector('#connection-ping').textContent,'123 ms');
+ snapshot.shiro={state:'disconnected',regions:[]};await tick();await wait();assert.equal(window.document.querySelector('#connection-timer').textContent,'00:00:00');assert.equal(window.document.querySelector('#connection-ping').textContent,'—');dom.window.close();
+});
+
+test('config list shows country metadata and deletes an untested row individually',async()=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});const {window}=dom,calls=[];window.scrollTo=()=>{};window.setInterval=()=>0;
+ const snapshot={settings:{engine:'shiro',systemProxy:true,cdnIPs:'',autoStart:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'}};
+ let items=[{id:'a'.repeat(24),name:'DE sample',source:'@one · وب',scheme:'vless',network:'tcp',security:'tls',latency:null,countryCode:'DE',countrySource:'label'},
+ {id:'b'.repeat(24),name:'unknown country',source:'@two · DNS/فید',scheme:'vless',network:'tcp',security:'tls',latency:-1,countryCode:''}];
+ window.lml={platform:'windows',invoke:async(method,data)=>{calls.push({method,data});if(method==='snapshot')return snapshot;if(method==='configsList'||method==='configsRefresh')return {items,hiddenCount:0};if(method==='configsRemove'){items=items.filter(x=>x.id!==data.id);return {items,removed:1,hiddenCount:1};}return true;}};
+ window.eval(js);await wait();window.document.querySelector('[data-nav="configs"]').click();await wait();
+ const flag=window.document.querySelector('.config-flag img');assert(flag);assert.match(flag.getAttribute('src'),/flags\/de\.svg/);assert.match(flag.parentElement.title,/نام کانفیگ/);
+ assert.equal(window.document.querySelectorAll('.config-flag img').length,1);window.document.querySelector('[data-remove-config="'+('a'.repeat(24))+'"]').click();await wait();
+ assert(calls.some(x=>x.method==='configsRemove'&&x.data.id==='a'.repeat(24)));assert.equal(window.document.querySelectorAll('.config-item').length,1);
+ assert.equal(window.document.querySelector('#config-remove-failed').disabled,false);dom.window.close();
 });

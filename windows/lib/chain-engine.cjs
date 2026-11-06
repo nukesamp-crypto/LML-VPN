@@ -2,22 +2,23 @@
 // Two explicit local process chains using the application's existing cores.
 // The last local HTTP listener owns system proxy; no remote peer sees it.
 const {verifyThroughProxy}=require('./config-engine.cjs');
+const {performance}=require('node:perf_hooks');
 const MODES=new Set(['psiphon-via-xray','xray-via-psiphon']);
 class ChainEngine {
   constructor({xray,hop,proxy,onChange=()=>{},verify=verifyThroughProxy}){
     this.xray=xray;this.hop=hop;this.proxy=proxy;this.onChange=onChange;this.verify=verify;
     this.startJob=null;this.stopJob=null;this.generation=0;this.proxyOn=false;this.stopping=false;
-    this.state={state:'disconnected',detail:'آمادهٔ انتخاب حالت اتصال',httpPort:0,socksPort:0,tested:null,mode:'',name:''};
+    this.state={state:'disconnected',detail:'آمادهٔ انتخاب حالت اتصال',httpPort:0,socksPort:0,tested:null,mode:'',name:'',id:'',pingMs:null,connectedAt:null};
     this.hop.onEvent=event=>this.onHopEvent(event);
   }
   snapshot(){return {...this.state};}
-  set(state,detail,extra={}){this.state={...this.state,state,detail,...extra};this.onChange(this.snapshot());}
+  set(state,detail,extra={}){const connectedAt=state==='connected'?(this.state.state==='connected'?this.state.connectedAt:Date.now()):null;this.state={...this.state,state,detail,connectedAt,...extra};this.onChange(this.snapshot());}
   active(){return !!this.startJob||!!this.stopJob||this.hop.active()||['connecting','connected','disconnecting'].includes(this.state.state);}
   start(config,{mode,settings,systemProxy=true,routing=null}={}){
     if(this.active()||this.xray.active())throw new Error('ابتدا اتصال فعلی را قطع کن.');
     if(!MODES.has(mode))throw new Error('حالت زنجیره معتبر نیست.');
     const generation=++this.generation;
-    this.set('connecting','در حال آماده‌سازی دو مسیر اتصال…',{mode,name:config?.remark||config?.scheme?.toUpperCase()||'',tested:null,httpPort:0,socksPort:0});
+    this.set('connecting','در حال آماده‌سازی دو مسیر اتصال…',{mode,name:config?.remark||config?.scheme?.toUpperCase()||'',id:config?.id||'',tested:null,pingMs:null,httpPort:0,socksPort:0});
     // Return immediately: UI can cancel a slow Psiphon handshake.
     const job=this._start(generation,config,{mode,settings,systemProxy,routing});this.startJob=job;
     job.then(()=>{if(this.startJob===job)this.startJob=null;},()=>{if(this.startJob===job)this.startJob=null;});
@@ -58,12 +59,13 @@ class ChainEngine {
     }
   }
   checkRoute(generation,port,systemProxy){
+    const started=performance.now();
     void this.verify(port).then(ok=>{
       if(generation!==this.generation||this.state.state!=='connected')return;
       const label=systemProxy?'پراکسی ویندوز':`HTTP محلی 127.0.0.1:${port}`;
-      this.set('connected',ok?`${label} فعال است و آزمون HTTPS زنجیره موفق بود.`:`${label} فعال است، اما آزمون HTTPS موفق نشد؛ مسیر یا کانفیگ دیگری را امتحان کن.`,{tested:ok});
+      this.set('connected',ok?`${label} فعال است و آزمون HTTPS زنجیره موفق بود.`:`${label} فعال است، اما آزمون HTTPS موفق نشد؛ مسیر یا کانفیگ دیگری را امتحان کن.`,{tested:ok,pingMs:ok?Math.max(1,Math.round(performance.now()-started)):-1});
     }).catch(()=>{
-      if(generation===this.generation&&this.state.state==='connected')this.set('connected','آزمون HTTPS زنجیره موفق نشد.',{tested:false});
+      if(generation===this.generation&&this.state.state==='connected')this.set('connected','آزمون HTTPS زنجیره موفق نشد.',{tested:false,pingMs:-1});
     });
   }
   onHopEvent(event){
@@ -95,7 +97,7 @@ class ChainEngine {
       try{await this.proxy.restore();}catch{this.stopping=false;this.set('error','بازگرداندن پراکسی ویندوز ممکن نشد؛ تنظیمات ویندوز را بررسی کن.');throw new Error('بازگرداندن پراکسی ویندوز ممکن نشد.');}
       this.proxyOn=false;
     }
-    this.stopping=false;this.set('disconnected','اتصال زنجیره قطع شد.',{httpPort:0,socksPort:0,tested:null,mode:'',name:''});return this.snapshot();
+    this.stopping=false;this.set('disconnected','اتصال زنجیره قطع شد.',{httpPort:0,socksPort:0,tested:null,mode:'',name:'',id:'',pingMs:null});return this.snapshot();
   }
 }
 module.exports={ChainEngine,MODES};

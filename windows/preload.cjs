@@ -7,6 +7,5 @@ contextBridge.exposeInMainWorld('lml', Object.freeze({
   window: action => ipcRenderer.send('lml:window', action),
   onFeedStatus:callback=>subscribe('feed:status',callback),
   onConfigs:callback=>subscribe('configs:updated',callback),
-  onConfigProgress:callback=>subscribe('configs:progress',callback),
-  onAppUpdate:callback=>subscribe('app:update',callback)
+  onConfigProgress:callback=>subscribe('configs:progress',callback)
 }));

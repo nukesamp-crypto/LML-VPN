@@ -13,8 +13,8 @@ const {PsiphonHop} = require('./lib/psiphon-hop.cjs');
 const {ChainEngine,MODES} = require('./lib/chain-engine.cjs');
 const {ConfigProbe} = require('./lib/config-probe.cjs');
 const {buildRouting} = require('./lib/routing.cjs');
-const {ConfigEngine} = require('./lib/config-engine.cjs');
-const {createAppUpdater} = require('./lib/app-updater.cjs');
+const {ConfigEngine,verifyThroughProxy} = require('./lib/config-engine.cjs');
+const {performance} = require('node:perf_hooks');
 const {ConnectionGuard} = require('./lib/connection-guard.cjs');
 const connectionGuard = new ConnectionGuard();
 
@@ -26,12 +26,13 @@ const LINKS = Object.freeze({
   shiroSource:'https://github.com/shirokhorshid/shirokhorshid-android',
   psiphonCore:'https://github.com/shirokhorshid/psiphon-tunnel-core',
   help:'https://github.com/getlantern/lantern/issues',
-  channel:'https://t.me/LML_panel'
+  channel:'https://t.me/LML_panel',
+  thefeedSource:'https://github.com/sartoopjj/thefeed'
 });
-let mainWindow, feedFeature, configSources, configEngine, chainEngine, configProbe, appUpdates, settings={...DEFAULTS}, proxy, psiphonProcess=null, stopping=false, quitting=false;
+let mainWindow, feedFeature, configSources, configEngine, chainEngine, configProbe, settings={...DEFAULTS}, proxy, psiphonProcess=null, stopping=false, quitting=false;
 let configKind='direct';
 const anyConfigActive=()=>!!(chainEngine?.active()||configEngine?.active());
-let shiroState={state:'disconnected',detail:'آمادهٔ اتصال',httpPort:0,socksPort:0,regions:[]};
+let shiroState={state:'disconnected',detail:'آمادهٔ اتصال',httpPort:0,socksPort:0,regions:[],connectedAt:null,pingMs:null};
 let lanternState={state:'unknown',detail:'وضعیت سرویس هنوز بررسی نشده است.'};
 let lastLanternCheck=0, lanternStartedByUs=false, connectingProxy=false;
 let lanternConnectJob=null, lanternController=null, lanternGeneration=0, lanternStopping=false;
@@ -39,7 +40,7 @@ const dataDir=()=>app.getPath('userData');
 const settingsPath=()=>path.join(dataDir(),'settings.json');
 const regionsPath=()=>path.join(dataDir(),'psiphon-regions.json');
 const binDir=()=>app.isPackaged ? path.join(process.resourcesPath,'bin') : path.join(__dirname,'resources','bin');
-const setShiro=(state,detail, extra={})=>{ shiroState={...shiroState,state,detail,...extra}; };
+const setShiro=(state,detail, extra={})=>{const connectedAt=state==='connected'?(shiroState.state==='connected'?shiroState.connectedAt:Date.now()):null;shiroState={...shiroState,state,detail,connectedAt,...extra};};
 async function save(){
   const p=settingsPath(), t=p+'.tmp';
   await fs.writeFile(t,JSON.stringify(settings,null,2),{mode:0o600});
@@ -57,13 +58,13 @@ async function refreshLantern(force=false,timeout){
   try {
     const s=await lantern.status(timeout ? {timeout} : undefined);
     const label={connected:'سرویس لنترن متصل است.',disconnected:'سرویس لنترن آماده است.',connecting:'لنترن در حال اتصال است.',disconnecting:'در حال قطع اتصال.',restarting:'در حال راه‌اندازی دوباره.',error:'سرویس لنترن خطا گزارش کرده است.'};
-    lanternState={state:label[s]?s:'unknown',detail:label[s]||'وضعیت سرویس نامشخص است.'};
+    lanternState={state:label[s]?s:'unknown',detail:label[s]||'وضعیت سرویس نامشخص است.',connectedAt:s==='connected'?(lanternState.state==='connected'?lanternState.connectedAt:Date.now()):null};
   } catch { lanternState={state:'unavailable',detail:'سرویس داخلی لنترن در دسترس نیست؛ نصب LML VPN را بررسی کن.'}; }
   return lanternState;
 }
 async function snapshot(){
   if (settings.engine==='lantern' && !lanternConnectJob && !lanternStopping) await refreshLantern(false,2500);
-  return {platform:'windows', settings:{...settings}, shiro:{...shiroState}, lantern:{...lanternState}, configConnection:(configKind==='direct'?configEngine:chainEngine)?.snapshot(), configProbe:configProbe?.snapshot(), appUpdate:appUpdates?.snapshot(), version:app.getVersion()};
+  return {platform:'windows', settings:{...settings}, shiro:{...shiroState}, lantern:{...lanternState}, configConnection:(configKind==='direct'?configEngine:chainEngine)?.snapshot(), configProbe:configProbe?.snapshot(), version:app.getVersion()};
 }
 async function onNotice(proc,notice){
   if (proc!==psiphonProcess || stopping || !notice || typeof notice!=='object') return;
@@ -84,7 +85,9 @@ async function onNotice(proc,notice){
     try {
       if (settings.systemProxy) await proxy.activate(shiroState.httpPort);
       if (proc!==psiphonProcess || stopping) { if (settings.systemProxy) await proxy.restore(); return; }
-      setShiro('connected',settings.systemProxy?'تونل برقرار شد؛ پراکسی ویندوز فعال است.':'تونل برقرار شد؛ فقط پراکسی محلی فعال است.');
+      setShiro('connected',settings.systemProxy?'تونل برقرار شد؛ پراکسی ویندوز فعال است.':'تونل برقرار شد؛ فقط پراکسی محلی فعال است.',{pingMs:null});
+      const started=performance.now(),port=shiroState.httpPort;
+      void verifyThroughProxy(port).then(ok=>{if(proc===psiphonProcess&&shiroState.state==='connected'&&shiroState.httpPort===port)setShiro('connected',shiroState.detail,{pingMs:ok?Math.max(1,Math.round(performance.now()-started)):-1});});
     } catch(e) {
       setShiro('error',e.message||'فعال‌سازی پراکسی انجام نشد.');
       proc.kill();
@@ -104,7 +107,7 @@ async function startShiro(check=()=>{}){
   const config=psiphonConfig(base,settings,0,0,work);
   const cfgFile=path.join(work,'config.json');
   await fs.writeFile(cfgFile,JSON.stringify(config),{mode:0o600});check();
-  setShiro('connecting','در حال پیدا کردن مسیر اتصال…',{httpPort:0,socksPort:0});
+  setShiro('connecting','در حال پیدا کردن مسیر اتصال…',{httpPort:0,socksPort:0,pingMs:null});
   stopping=false;
   const child=spawn(core,['-config',cfgFile,'-serverList',list],{windowsHide:true,stdio:['ignore','ignore','pipe']});
   psiphonProcess=child;
@@ -200,6 +203,9 @@ async function invoke(method,data){
       const ids=data?.all?configSources.snapshot().items.map(c=>c.id):[data?.id];return configProbe.start(ids);
     });
     case 'configsTestStop': await configProbe.stop();return configProbe.snapshot();
+    case 'configsRemove': return {removed:await configSources.remove(data?.id),...configSources.snapshot()};
+    case 'configsRemoveFailed': return {removed:await configSources.removeFailed(),...configSources.snapshot()};
+    case 'configsRestore': await configSources.restoreRemoved();return configSources.snapshot();
     case 'configsConnect': return connectionGuard.run(async check=>{
       if(anyConfigActive()||configProbe.snapshot().running)throw new Error('ابتدا اتصال یا آزمون کانفیگ فعلی را قطع کن.');
       if(psiphonProcess||lanternConnectJob||lanternStopping)throw new Error('اول اتصال موتور فعلی را قطع کن.');
@@ -207,14 +213,7 @@ async function invoke(method,data){
       if(typeof data?.id!=='string'||!/^([a-f0-9]{24})$/.test(data.id))throw new Error('کانفیگ معتبر انتخاب نشده است.');
       const c=configSources.get(data.id);if(!c)throw new Error('این کانفیگ دیگر در فهرست نیست.');
       const mode=data?.mode||'direct';if(mode!=='direct'&&!MODES.has(mode))throw new Error('حالت اتصال نامعتبر است.');
-      let detail='گردانندهٔ سرور می‌تواند IP و ترافیک بدون HTTPS را ببیند. همهٔ برنامه‌ها از پراکسی ویندوز پیروی نمی‌کنند و Kill Switch وجود ندارد.';
-      if(c.tls.insecure)detail+='\n\nهشدار: گواهی TLS همچنان بررسی می‌شود و این کانفیگ ممکن است برقرار نشود.';
-      if(c.transport.security==='none')detail+='\n\nهشدار: این کانفیگ امنیت لایهٔ انتقال TLS ندارد.';
-      if(settings.routingPreset!=='global'||settings.routingCustom)detail+='\n\nقوانین مسیریابی ممکن است بعضی ترافیک‌ها را مستقیم و خارج از پراکسی بفرستند.';
-      const answer=await dialog.showMessageBox(mainWindow,{type:'warning',title:'اتصال به سرور کانفیگ',message:'به این سرور وصل می‌شوی؟',detail,buttons:['انصراف','اتصال'],defaultId:0,cancelId:0,noLink:true});check();
-      if(answer.response!==1)return snapshot();
-      if(psiphonProcess||lanternConnectJob||lanternStopping||anyConfigActive()||configProbe.snapshot().running)throw new Error('یک اتصال دیگر فعال شده است؛ ابتدا آن را قطع کن.');
-      const latest=await refreshLantern(true,2500);check();if(['connected','connecting','restarting','disconnecting'].includes(latest.state))throw new Error('اول اتصال لنترن را قطع کن.');
+      // Connect immediately after validation; no modal confirmation.
       const routing=buildRouting({preset:settings.routingPreset,custom:settings.routingCustom});
       configKind=mode==='direct'?'direct':'chain';
       if(mode==='direct')void configEngine.start(c,{systemProxy:settings.systemProxy,routing}).catch(()=>{});
@@ -222,8 +221,6 @@ async function invoke(method,data){
       return snapshot();
     });
     case 'configsDisconnect': connectionGuard.cancel();if(configKind==='chain')await chainEngine.stop();else await configEngine.stop();return snapshot();
-    case 'checkAppUpdate': return appUpdates.check();
-    case 'installAppUpdate': if(!appUpdates.install())throw new Error('به‌روزرسانی آمادهٔ نصب نیست.');return true;
     case 'selectEngine': {
       if(connectionGuard.busy)throw new Error('ابتدا درخواست اتصال را کامل یا لغو کن.');
       if (!['shiro','lantern'].includes(data?.engine)) throw new Error('موتور نامعتبر است.');
@@ -262,18 +259,17 @@ app.whenReady().then(async()=>{
   lantern.configureHelper(path.join(binDir(),'lantern-ipc.exe'));
   try{await proxy.restore();}catch{setShiro('error','بازگرداندن پراکسی قبلی ممکن نشد؛ تنظیمات ویندوز را بررسی کن.');}
   await load();
-  mainWindow=new BrowserWindow({width:1240,height:820,minWidth:920,minHeight:650,backgroundColor:'#080d15',frame:false,show:false,icon:path.join(__dirname,'resources','icon.ico'),
+  mainWindow=new BrowserWindow({width:1240,height:820,minWidth:920,minHeight:650,backgroundColor:'#f8f7f3',frame:false,show:false,icon:path.join(__dirname,'resources','icon.ico'),
     webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
   const send=(channel,value)=>{if(mainWindow&&!mainWindow.isDestroyed()&&!mainWindow.webContents.isDestroyed())mainWindow.webContents.send(channel,value);};
   feedFeature=createFeedFeature({app,WebContentsView,session,shell,dialog,binDir,getMainWindow:()=>mainWindow});
   configSources=new ConfigSources({app,binDir,sharedController:feedFeature.getController(),onChange:value=>send('configs:updated',value)});await configSources.load();
   const devXray=!app.isPackaged && process.platform!=='win32' && process.env.LML_XRAY_DEV_BIN;
   const devPsiphon=!app.isPackaged && process.platform!=='win32' && process.env.LML_PSIPHON_DEV_BIN;
-  configEngine=new ConfigEngine({binDir:binDir(),dataDir:dataDir(),proxy,devBinary:devXray||null,onChange:value=>chainEngine?.onXrayState(value)});await configEngine.cleanup();
+  configEngine=new ConfigEngine({binDir:binDir(),dataDir:dataDir(),proxy,devBinary:devXray||null,onChange:value=>{chainEngine?.onXrayState(value);if(configKind==='direct'&&value.state==='connected'&&Number.isFinite(value.pingMs)&&value.id)configSources.setLatency(value.id,value.pingMs);}});await configEngine.cleanup();
   const hop=new PsiphonHop({binDir:binDir(),dataDir:dataDir(),devBinary:devPsiphon||null});
-  chainEngine=new ChainEngine({xray:configEngine,hop,proxy});
+  chainEngine=new ChainEngine({xray:configEngine,hop,proxy,onChange:value=>{if(configKind==='chain'&&value.state==='connected'&&Number.isFinite(value.pingMs)&&value.id)configSources.setLatency(value.id,value.pingMs);}});
   configProbe=new ConfigProbe({binDir:binDir(),dataDir:dataDir(),sources:configSources,devBinary:devXray||null,onChange:value=>send('configs:progress',value)});
-  appUpdates=createAppUpdater({app,autoUpdater:require('electron-updater').autoUpdater,onChange:value=>send('app:update',value)});
   mainWindow.on('closed',()=>{mainWindow=null;app.quit();});
   mainWindow.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   mainWindow.webContents.on('will-navigate',(e)=>e.preventDefault());
@@ -294,7 +290,6 @@ app.on('window-all-closed',()=>app.quit());
 app.on('before-quit',event=>{
   if(quitting)return; event.preventDefault(); quitting=true;connectionGuard.cancel();
   (async()=>{
-    appUpdates?.stop();
     try{await configProbe?.stop();}catch{}
     try{await chainEngine?.stop();}catch{}
     try{await configEngine?.stop();}catch{}

@@ -1,13 +1,19 @@
 'use strict';
 // Public Telegram posts and the official DNS feed, kept as data, never code.
 const fs=require('node:fs/promises'),path=require('node:path'),http=require('node:http');
-const {ThefeedController,WINDOWS_SHA256,RELEASE,inspectCore}=require('./thefeed.cjs');
-const {ThefeedUpdater}=require('./thefeed-updater.cjs');
+const {ThefeedController,WINDOWS_SHA256}=require('./thefeed.cjs');
+const dns=require('node:dns/promises'),net=require('node:net');
+const {GeoCountry,flagFromRemark}=require('./country.cjs');
 const {validateOfficialResolvers}=require('./thefeed-resolvers.cjs');
 const {extractLinks,parseLink,publicEntry}=require('./config-links.cjs');
-const CHANNELS=Object.freeze(['PrivateVPNs','persianvpnhub','Ln2Ray','emergencyconfigs','FreeNPV','ircfspace']);
-const MAX_ENTRIES=500,MAX_DNS_CHANNELS=20;
+const CHANNELS=require('./telegram-channels.cjs');
+const MAX_ENTRIES=500,MAX_DNS_CHANNELS=100,WEB_CONCURRENCY=8,MAX_HIDDEN=5000;
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function mapLimited(list,limit,fn){
+ const values=Array(list.length);let next=0;
+ await Promise.all(Array.from({length:Math.min(limit,list.length)},async()=>{for(;;){const i=next++;if(i>=list.length)break;values[i]=await fn(list[i],i);}}));
+ return values;
+}
 function localRequest(endpoint,route,method='GET',body,timeout=5000){
  return new Promise((resolve,reject)=>{
   const data=body===undefined?null:Buffer.from(JSON.stringify(body));
@@ -33,8 +39,8 @@ async function telegram(channel,{signal}={}){
  if(!response.ok)throw new Error('channel unavailable');return extractLinks(await limitedText(response),'@'+channel+' · وب');
 }
 class DnsFeedSource {
- constructor({executable,dataDir,expectedHash=WINDOWS_SHA256,updater=null,sharedController=null}){
-  this.controller=new ThefeedController({executable,dataDir,expectedHash,updater});
+ constructor({executable,dataDir,expectedHash=WINDOWS_SHA256,sharedController=null}){
+  this.controller=new ThefeedController({executable,dataDir,expectedHash});
   this.sharedController=sharedController;this.busy=null;this.closed=false;this.usingShared=false;
  }
  check(){if(this.closed)throw new Error('دریافت فید متوقف شد.');}
@@ -93,13 +99,19 @@ class DnsFeedSource {
   const indexed=channels.map((c,i)=>({name:String(c?.Name||c?.name||'').slice(0,60),index:i+1})).filter(c=>c.name&&!/[\x00-\x1f]/.test(c.name));
   const priority=indexed.filter(c=>CHANNELS.some(x=>x.toLowerCase()===c.name.toLowerCase()));
   const selected=[...priority,...indexed.filter(c=>!priority.includes(c))].slice(0,MAX_DNS_CHANNELS);
-  await Promise.all(selected.map(c=>localRequest(e,'/api/refresh?channel='+c.index,'POST',undefined,5000).catch(()=>null)));
+  await mapLimited(selected,10,c=>localRequest(e,'/api/refresh?channel='+c.index,'POST',undefined,5000).catch(()=>null));
   let result=[],firstResultAt=0;
   while(Date.now()<deadline&&!this.closed){
-   const pages=await Promise.all(selected.map(async c=>({name:c.name,data:await localRequest(e,'/api/messages/'+c.index).catch(()=>null)})));
-   result=[];for(const page of pages)for(const message of page.data?.messages||[])result.push(...extractLinks(String(message?.Text||message?.text||''),'@'+page.name+' · DNS/فید'));
+   const buckets=await mapLimited(selected,10,async c=>{
+    const data=await localRequest(e,'/api/messages/'+c.index).catch(()=>null),items=[];
+    const messages=Array.isArray(data?.messages)?data.messages:[];
+    for(const message of messages){items.push(...extractLinks(String(message?.Text||message?.text||''),'@'+c.name+' · DNS/فید'));if(items.length>=100)break;}
+    return items.slice(0,100);
+   });
+   result=[];const longest=Math.max(0,...buckets.map(b=>b.length));
+   for(let i=0;i<longest&&result.length<MAX_ENTRIES;i++)for(const bucket of buckets)if(bucket[i]&&result.length<MAX_ENTRIES)result.push(bucket[i]);
    if(result.length&&!firstResultAt)firstResultAt=Date.now();
-   if(firstResultAt&&(new Set(result.map(x=>x.source)).size>=4||Date.now()-firstResultAt>=10000))break;
+   if(firstResultAt&&(new Set(result.map(x=>x.source)).size>=Math.min(10,selected.length)||Date.now()-firstResultAt>=10000))break;
    await pause(1500);
   }
   this.check();return result.slice(0,MAX_ENTRIES);
@@ -107,56 +119,127 @@ class DnsFeedSource {
  async stop(){this.closed=true;await this.controller.stop();}
 }
 class ConfigSources {
- constructor({app,binDir,onChange=()=>{},fetchTelegram=telegram,dnsSource=null,sharedController=null}){
+ constructor({app,binDir,onChange=()=>{},fetchTelegram=telegram,dnsSource=null,sharedController=null,geo=null,resolveHost=null}){
   this.file=path.join(app.getPath('userData'),'public-configs.json');this.onChange=onChange;this.fetchTelegram=fetchTelegram;
-  this.entries=new Map();this.latencies={};this.busy=null;this.saveQueue=Promise.resolve();this.closed=false;this.aborter=null;this.fetchedAt=null;this.stale=false;this.note='';
+  this.entries=new Map();this.latencies={};this.hidden=new Set();this.busy=null;this.saveQueue=Promise.resolve();this.closed=false;this.aborter=null;this.fetchedAt=null;this.stale=false;this.note='';
+  this.geo=geo||new GeoCountry(path.join(binDir(),'geoip.dat'));
+  this.resolveHost=resolveHost||(async host=>(await dns.lookup(host,{family:4})).address);
+  this.hostCountries=new Map();
   const dev=!app.isPackaged&&process.platform!=='win32'&&process.env.LML_FEED_DEV_BIN;
-  const updater=app.isPackaged&&process.platform==='win32'?new ThefeedUpdater({directory:path.join(app.getPath('userData'),'thefeed-core-updates'),bundledVersion:RELEASE,validateBinary:(file,version,signal)=>inspectCore(file,{expectedVersion:version,checkUI:true,cancelled:()=>signal.aborted})}):null;
-  this.dns=dnsSource||new DnsFeedSource({executable:dev||path.join(binDir(),'thefeed-client.exe'),dataDir:path.join(app.getPath('userData'),'thefeed-config-source'),expectedHash:dev?null:WINDOWS_SHA256,updater,sharedController});
+  // The shipped version is fixed; no automatic GitHub core update runs here.
+  this.dns=dnsSource||new DnsFeedSource({executable:dev||path.join(binDir(),'thefeed-client.exe'),dataDir:path.join(app.getPath('userData'),'thefeed-config-source'),expectedHash:dev?null:WINDOWS_SHA256,sharedController});
  }
- snapshot(){return {items:[...this.entries.values()].slice(0,MAX_ENTRIES).map(c=>({...publicEntry(c),latency:this.latencies[c.id]??null})),fetchedAt:this.fetchedAt,stale:this.stale,note:this.note,refreshing:!!this.busy};}
+ snapshot(){return {items:[...this.entries.values()].slice(0,MAX_ENTRIES).map(c=>({...publicEntry(c),countryCode:c.countryCode||flagFromRemark(c.remark),countrySource:c.countrySource||(flagFromRemark(c.remark)?'label':''),latency:this.latencies[c.id]??null})),fetchedAt:this.fetchedAt,stale:this.stale,note:this.note,refreshing:!!this.busy,hiddenCount:this.hidden.size};}
  emit(){this.onChange(this.snapshot());}
  async load(){
   try{
    const stat=await fs.stat(this.file);if(stat.size>6_000_000)return;
    const saved=JSON.parse(await fs.readFile(this.file,'utf8'));if(!Array.isArray(saved.links)||!Number.isFinite(saved.fetchedAt))return;
-   for(const item of saved.links.slice(0,MAX_ENTRIES)){try{if(item.source==='ورودی دستی')continue;const c=parseLink(item.raw);c.source=String(item.source||'ذخیره‌شده').slice(0,100);this.entries.set(c.id,c);}catch{}}
+   this.hidden=new Set((Array.isArray(saved.hidden)?saved.hidden:[]).filter(id=>typeof id==='string'&&/^[a-f0-9]{24}$/.test(id)).slice(-MAX_HIDDEN));
+   for(const item of saved.links.slice(0,MAX_ENTRIES)){try{if(item.source==='ورودی دستی')continue;const c=parseLink(item.raw);c.source=String(item.source||'ذخیره‌شده').slice(0,100);if(!this.hidden.has(c.id))this.entries.set(c.id,c);}catch{}}
    this.fetchedAt=saved.fetchedAt;this.stale=true;this.note='فهرست ذخیره‌شده است؛ برای دریافت موارد تازه به‌روزرسانی را بزن.';
+   void this.enrichLiteralIPs();
   }catch{}
  }
  persist(){
-  const contents=JSON.stringify({fetchedAt:this.fetchedAt,links:[...this.entries.values()].slice(0,MAX_ENTRIES).map(c=>({raw:c.raw,source:c.source}))});
+  const contents=JSON.stringify({fetchedAt:this.fetchedAt||Date.now(),hidden:[...this.hidden].slice(-MAX_HIDDEN),links:[...this.entries.values()].slice(0,MAX_ENTRIES).map(c=>({raw:c.raw,source:c.source}))});
   this.saveQueue=this.saveQueue.catch(()=>{}).then(async()=>{await fs.mkdir(path.dirname(this.file),{recursive:true});const tmp=this.file+'.tmp';await fs.writeFile(tmp,contents,{mode:0o600});await fs.rename(tmp,this.file);});return this.saveQueue;
  }
  get(id){return this.entries.get(id)||null;}
- setLatency(id,ms){if(this.entries.has(id)){this.latencies[id]=Number.isFinite(ms)?Math.round(ms):-1;this.emit();}}
+ setLatency(id,ms){
+  if(!this.entries.has(id))return;
+  this.latencies[id]=Number.isFinite(ms)&&ms>=0?Math.round(ms):-1;this.emit();
+  // Hostname DNS resolution is only done after the user actually tests or
+  // connects to that server. It identifies ingress IP, not the exit country.
+  if(this.latencies[id]>=0)void this.enrichCountry(id,true);
+ }
+ async enrichCountry(id,allowDNS=false){
+  const c=this.entries.get(id);if(!c||c.countryCode||flagFromRemark(c.remark))return;
+  try{
+   let host=String(c.address||'').replace(/^\[|\]$/g,'');
+   if(net.isIP(host)!==4){
+    if(!allowDNS||net.isIP(host))return;
+    if(!this.hostCountries.has(host))this.hostCountries.set(host,this.resolveHost(host).then(ip=>this.geo.lookup(ip)).catch(()=>''));
+    const code=await this.hostCountries.get(host);
+    if(code&&this.entries.get(id)===c){c.countryCode=code;c.countrySource='ip';this.emit();}return;
+   }
+   const code=await this.geo.lookup(host);
+   if(code&&this.entries.get(id)===c){c.countryCode=code;c.countrySource='ip';this.emit();}
+  }catch{}
+ }
+ async enrichLiteralIPs(){
+  const list=[...this.entries.values()].filter(c=>!c.countryCode&&!flagFromRemark(c.remark)&&net.isIP(String(c.address||''))===4);
+  // Loading the same GeoIP index is shared; update the list in one renderer event.
+  if(!list.length)return;
+  let changed=false;
+  for(const c of list){try{const code=await this.geo.lookup(c.address);if(code&&this.entries.get(c.id)===c){c.countryCode=code;c.countrySource='ip';changed=true;}}catch{}}
+  if(changed&&!this.closed)this.emit();
+ }
+ async remove(id){
+  if(typeof id!=='string'||!this.entries.has(id))return 0;
+  this.hidden.add(id);while(this.hidden.size>MAX_HIDDEN)this.hidden.delete(this.hidden.values().next().value);
+  this.entries.delete(id);delete this.latencies[id];this.emit();await this.persist();return 1;
+ }
+ async removeFailed(){
+  // null means untested and must never be interpreted as a failed test.
+  const ids=[...this.entries.keys()].filter(id=>this.latencies[id]===-1);
+  for(const id of ids){this.hidden.add(id);this.entries.delete(id);delete this.latencies[id];}
+  while(this.hidden.size>MAX_HIDDEN)this.hidden.delete(this.hidden.values().next().value);
+  this.emit();if(ids.length)await this.persist();return ids.length;
+ }
+ async restoreRemoved(){this.hidden.clear();await this.persist();this.emit();return true;}
  refresh(){
   if(this.closed)return Promise.reject(new Error('بخش کانفیگ بسته شده است.'));if(this.busy)return this.busy;
   this.aborter=new AbortController();const core=this._refresh(this.aborter.signal);let job;
   job=core.finally(()=>{if(this.busy===job)this.busy=null;this.aborter=null;this.emit();}).then(()=>this.snapshot());
-  this.busy=job;this.note='در حال دریافت از کانال‌ها و DNS فید…';this.emit();return job;
+  this.busy=job;this.note='در حال بررسی ۱۰۰ کانال تلگرام و DNS فید…';this.emit();return job;
  }
  async _refresh(signal){
-  // Both sources run concurrently: DNS never waits for a blocked Telegram web request.
-  const dnsJob=Promise.resolve().then(()=>this.closed?[]:this.dns.fetch()).catch(()=>[]);
-  const results=await Promise.all(CHANNELS.map(async name=>{try{return {name,items:await this.fetchTelegram(name,{signal}),ok:true};}catch{return {name,items:[],ok:false};}}));
-  if(this.closed)return;const direct=results.flatMap(r=>r.items),unavailable=results.filter(r=>!r.ok).length;
-  if(direct.length){this.entries=new Map(direct.slice(0,MAX_ENTRIES).map(c=>[c.id,c]));this.latencies={};this.fetchedAt=Date.now();this.stale=false;this.note='کانال‌های وب دریافت شد؛ فید DNS در حال بررسی است.';this.emit();}
-  const dns=await dnsJob;if(this.closed)return;
-  if(dns.length){
-   // Interleave routes so a huge web response cannot crowd all DNS-only
-   // entries out of the bounded list. Preserve the true source of each item.
-   const merged=new Map();
-   const insert=(c,viaDns)=>{const existing=merged.get(c.id);if(existing){if(viaDns&&!existing.source.includes('DNS/فید'))existing.source+=' + DNS/فید';}else if(merged.size<MAX_ENTRIES)merged.set(c.id,c);};
-   for(let i=0;i<Math.max(direct.length,dns.length);i++){if(direct[i])insert(direct[i],false);if(dns[i])insert(dns[i],true);}
+  // A bounded pool prevents 100 simultaneous requests. DNS and web run in
+  // parallel; results appear as sources finish rather than after all timeouts.
+  const groups=Array(CHANNELS.length).fill(null);let dnsItems=[],finished=0,unavailable=0,hadFresh=false,lastEmit=0;
+  const merge=()=>{
+   const buckets=[];
+   const perDns=new Map();for(const c of dnsItems){const key=c.source||'DNS/فید';if(!perDns.has(key))perDns.set(key,[]);perDns.get(key).push(c);}
+   for(const items of perDns.values())buckets.push({items,dns:true});
+   for(const r of groups)if(r?.items?.length)buckets.push({items:r.items,dns:false});
+   if(!buckets.length)return false;
+   hadFresh=true;const previous=this.entries,merged=new Map(),max=Math.max(...buckets.map(b=>b.items.length));
+   for(let i=0;i<max&&merged.size<MAX_ENTRIES;i++)for(const bucket of buckets){
+    const c=bucket.items[i];if(!c||!c.id||this.hidden.has(c.id))continue;
+    const found=merged.get(c.id);
+    if(found){
+     if(bucket.dns&&!found.source.includes('DNS/فید'))found.source+=' + DNS/فید';
+     else if(!bucket.dns&&found.source.includes('DNS/فید')&&!found.source.includes('وب'))found.source+=' + وب';
+    }else if(merged.size<MAX_ENTRIES){
+     const old=previous.get(c.id);merged.set(c.id,{...c,countryCode:old?.countryCode||c.countryCode||'',countrySource:old?.countrySource||c.countrySource||''});
+    }
+   }
    this.entries=merged;this.latencies=Object.fromEntries(Object.entries(this.latencies).filter(([id])=>merged.has(id)));
-  }
-  if(direct.length||dns.length){
-   this.fetchedAt=Date.now();this.stale=false;
-   this.note=dns.length?`فهرست از کانال‌ها و DNS فید دریافت شد${unavailable?'؛ بعضی کانال‌های وب در دسترس نبودند.':'.'}`:(unavailable?'بعضی کانال‌ها و فید DNS در دسترس نبودند؛ فهرست ممکن است ناقص باشد.':'کانال‌های وب دریافت شدند؛ فید DNS پاسخی نداد.');
-   await this.persist();
+   this.fetchedAt=Date.now();this.stale=false;return true;
+  };
+  const announce=(force=false)=>{
+   if(this.closed)return;
+   const now=Date.now();if(!force&&now-lastEmit<250)return;
+   lastEmit=now;merge();this.note=`بررسی کانال‌های وب: ${finished.toLocaleString('fa-IR')} از ${CHANNELS.length.toLocaleString('fa-IR')}؛ DNS فید جداگانه بررسی می‌شود.`;this.emit();
+  };
+  let next=0;
+  const worker=async()=>{
+   while(!signal.aborted&&!this.closed){
+    const i=next++;if(i>=CHANNELS.length)break;
+    try{const items=await this.fetchTelegram(CHANNELS[i],{signal});groups[i]={items:Array.isArray(items)?items:[]};}
+    catch{groups[i]={items:[]};unavailable++;}
+    finished++;announce(finished===1);
+   }
+  };
+  const dnsJob=Promise.resolve().then(()=>this.closed?[]:this.dns.fetch()).catch(()=>[]).then(items=>{dnsItems=Array.isArray(items)?items:[];announce(true);});
+  await Promise.all(Array.from({length:Math.min(WEB_CONCURRENCY,CHANNELS.length)},worker));
+  if(this.closed)return;announce(true);await dnsJob;if(this.closed)return;merge();
+  if(hadFresh){
+   this.note=dnsItems.length?`کانال‌های وب و کانال‌های موجود در DNS فید بررسی شدند${unavailable?'؛ برخی منابع وب در دسترس نبودند.':'.'}`:(unavailable?'بعضی کانال‌های وب یا DNS فید در دسترس نبودند؛ فهرست ممکن است ناقص باشد.':'کانال‌های وب بررسی شدند؛ DNS فید موردی برنگرداند.');
+   await this.persist();void this.enrichLiteralIPs();
   }else{this.stale=true;this.note=this.entries.size?'دریافت ناموفق بود؛ فهرست ذخیره‌شده نمایش داده می‌شود.':'کانال‌ها و فید در دسترس نیستند؛ DNS فعال فید را بررسی کن و دوباره تلاش کن.';}
  }
  async stop(){this.closed=true;this.aborter?.abort();await this.dns.stop();await this.saveQueue.catch(()=>{});}
 }
-module.exports={CHANNELS,MAX_ENTRIES,ConfigSources,DnsFeedSource,telegram,localRequest,limitedText};
+module.exports={CHANNELS,MAX_ENTRIES,WEB_CONCURRENCY,ConfigSources,DnsFeedSource,telegram,localRequest,limitedText};

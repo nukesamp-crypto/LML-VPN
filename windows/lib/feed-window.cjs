@@ -1,8 +1,7 @@
 'use strict';
 const path=require('node:path');
 const fs=require('node:fs/promises');
-const {ThefeedController,WINDOWS_SHA256,RELEASE,inspectCore}=require('./thefeed.cjs');
-const {ThefeedUpdater}=require('./thefeed-updater.cjs');
+const {ThefeedController,WINDOWS_SHA256}=require('./thefeed.cjs');
 
 // The official client runs as its own authenticated, loopback-only process.
 // Its renderer is a sandboxed view inside the main window, never a new window;
@@ -10,22 +9,12 @@ const {ThefeedUpdater}=require('./thefeed-updater.cjs');
 function createFeedFeature({app,WebContentsView,session,shell,dialog,binDir,getMainWindow}) {
   const devOverride=!app.isPackaged && process.platform!=='win32' && process.env.LML_FEED_DEV_BIN;
   const executable=devOverride || path.join(binDir(),'thefeed-client.exe');
-  const updater=app.isPackaged && process.platform==='win32'?new ThefeedUpdater({
-    directory:path.join(app.getPath('userData'),'thefeed-core-updates'),bundledVersion:RELEASE,
-    validateBinary:(file,version,signal)=>inspectCore(file,{expectedVersion:version,checkUI:true,cancelled:()=>signal.aborted})
-  }):null;
-  const controller=new ThefeedController({executable,dataDir:path.join(app.getPath('userData'),'thefeed'),expectedHash:devOverride?null:WINDOWS_SHA256,updater});
+  const controller=new ThefeedController({executable,dataDir:path.join(app.getPath('userData'),'thefeed'),expectedHash:devOverride?null:WINDOWS_SHA256});
   const partition=session.fromPartition('persist:lml-thefeed');
-  let view=null,endpoint=null,status={state:'starting'},theme='',loading=null,ready=false,visible=false,bounds=null,lastExternal={url:'',time:0},updateReady=false;
+  let view=null,endpoint=null,status={state:'starting'},theme='',loading=null,ready=false,visible=false,bounds=null,lastExternal={url:'',time:0};
   const parent=()=>{const p=getMainWindow();return p && !p.isDestroyed()?p:null;};
   function isFeedURL(value){try{return !!endpoint && new URL(value).origin===endpoint.origin;}catch{return false;}}
   function sendStatus(next){status=next;const win=parent();if(win && !win.webContents.isDestroyed())win.webContents.send('feed:status',next);}
-  function checkCoreUpdate(){
-    if(!updater || !endpoint)return;
-    void updater.check(endpoint.version).then(r=>{
-      if(r.state==='downloaded'){updateReady=true;if(endpoint && status.state==='ready')sendStatus({state:'ready',updateReady:true});}
-    }).catch(()=>{});
-  }
   function safeExternal(value){
     try{
       const u=new URL(value);if(!['http:','https:'].includes(u.protocol)||u.username||u.password)return;
@@ -77,14 +66,14 @@ function createFeedFeature({app,WebContentsView,session,shell,dialog,binDir,getM
       sendStatus({state:'starting'});ready=false;layout();
       try{
         theme=theme||await fs.readFile(path.join(__dirname,'..','app','feed-theme.css'),'utf8');
-        endpoint=await controller.start();checkCoreUpdate();
+        endpoint=await controller.start();
         await partition.setProxy({mode:'direct'}); // TheFeed doesn't depend on the system proxy.
         const win=parent();if(!win)return;detach();
         view=new WebContentsView({webPreferences:{partition:'persist:lml-thefeed',contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,spellcheck:false,backgroundThrottling:false}});
-        const current=view;current.setBackgroundColor('#0b151d');current.setVisible(false);win.contentView.addChildView(current);layout();
+        const current=view;current.setBackgroundColor('#fbfaf7');current.setVisible(false);win.contentView.addChildView(current);layout();
         let skinReady=Promise.resolve();
         current.webContents.on('dom-ready',()=>{skinReady=current.webContents.insertCSS(theme,{cssOrigin:'user'}).catch(()=>{});});
-        current.webContents.on('did-finish-load',async()=>{await skinReady;if(view===current && parent()){ready=true;layout();sendStatus({state:'ready',updateReady});}});
+        current.webContents.on('did-finish-load',async()=>{await skinReady;if(view===current && parent()){ready=true;layout();sendStatus({state:'ready'});}});
         current.webContents.on('render-process-gone',()=>{if(view===current){ready=false;layout();sendStatus({state:'error',message:'نمایش TheFeed متوقف شد؛ دوباره تلاش کن.'});}});
         current.webContents.setWindowOpenHandler(({url})=>{if(!isFeedURL(url))safeExternal(url);return {action:'deny'};});
         current.webContents.on('will-navigate',(event,url)=>{if(!isFeedURL(url)){event.preventDefault();safeExternal(url);}});
@@ -96,7 +85,7 @@ function createFeedFeature({app,WebContentsView,session,shell,dialog,binDir,getM
     if(rect && ['x','y','width','height'].every(k=>Number.isFinite(rect[k])) && rect.width>=0 && rect.height>=0)bounds=rect;
     layout();
   }
-  async function show(rect){visible=true;position(rect);if(!view && !loading)void start();else {layout();checkCoreUpdate();sendStatus(status);}return true;}
+  async function show(rect){visible=true;position(rect);if(!view && !loading)void start();else {layout();sendStatus(status);}return true;}
   function hide(){visible=false;layout();return true;}
   async function retry(){detach();await controller.stop();return start();}
   async function stop(){visible=false;detach();await controller.stop();}

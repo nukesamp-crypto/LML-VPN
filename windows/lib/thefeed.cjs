@@ -121,9 +121,9 @@ async function inspectCore(executable,{expectedVersion,checkUI=false,onSpawn=()=
 }
 
 class ThefeedController extends EventEmitter {
-  constructor({executable,dataDir,expectedHash=WINDOWS_SHA256,timeout=20000,env={},updater=null}) {
+  constructor({executable,dataDir,expectedHash=WINDOWS_SHA256,timeout=20000,env={}}) {
     super();
-    this.executable=executable;this.dataDir=dataDir;this.expectedHash=expectedHash;this.timeout=timeout;this.extraEnv=env;this.updater=updater;
+    this.executable=executable;this.dataDir=dataDir;this.expectedHash=expectedHash;this.timeout=timeout;this.extraEnv=env;
     this.child=null;this.inspectionChild=null;this.endpoint=null;this.starting=null;this.stopping=false;this.generation=0;
   }
   async start() {
@@ -142,22 +142,13 @@ class ThefeedController extends EventEmitter {
     }
     await fsp.mkdir(this.dataDir,{recursive:true});
     if(generation!==this.generation)throw new Error('راه‌اندازی TheFeed لغو شد.');
-    // A previously downloaded release is hash-verified before use. A failed
-    // or absent update falls back to the bundled official core.
-    const cached=this.updater?await this.updater.cached().catch(()=>null):null;
-    let executable=cached?.path || this.executable;
+    // Always inspect and run the bundled, pinned official executable.
+    const executable=this.executable;
     let defaults;
-    const inspect=(file,version)=>inspectCore(file,{expectedVersion:version,
+    const inspect=(file)=>inspectCore(file,{
       onSpawn:child=>{this.inspectionChild=child;},cancelled:()=>generation!==this.generation,timeout:this.timeout});
     try {
-      try { defaults=await inspect(executable,cached?.version); }
-      catch(err){
-        if(!cached || generation!==this.generation)throw err;
-        // Antivirus, permissions or a later incompatibility must not prevent
-        // opening the bundled, pinned core when a cached update fails.
-        await this.updater.invalidate(cached).catch(()=>{});
-        executable=this.executable;defaults=await inspect(executable);
-      }
+      defaults=await inspect(executable);
       if(generation!==this.generation)throw new Error('cancelled');
       await ensureOfficialResolvers(this.dataDir,defaults.resolvers,defaults.version);
     } catch {
@@ -205,7 +196,6 @@ class ThefeedController extends EventEmitter {
   }
   async stop() {
     ++this.generation; // cancel a start even if the executable has not spawned yet
-    if(this.updater)this.updater.cancel();
     if(this.inspectionChild){try{this.inspectionChild.kill();}catch{}}
     const child=this.child;
     if(!child)return;

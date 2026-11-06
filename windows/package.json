@@ -73,17 +73,6 @@
     "electronLanguages": [
       "en-US",
       "fa"
-    ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "nukesamp-crypto",
-        "repo": "LML-VPN",
-        "releaseType": "release"
-      }
     ]
-  },
-  "dependencies": {
-    "electron-updater": "^6.6.2"
   }
 }

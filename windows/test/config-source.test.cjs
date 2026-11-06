@@ -51,3 +51,49 @@ test('a ping recorded while DNS is still fetching survives the merged list',asyn
  s.setLatency(c.id,71);resolveDns([entry(2,'@dns · DNS/فید')]);const result=await job;
  assert.equal(result.items.find(x=>x.id===c.id).latency,71);
 });
+
+test('exactly 100 Telegram sources are visited with bounded concurrency and fair representation',async t=>{
+ assert.equal(CHANNELS.length,100);assert.equal(new Set(CHANNELS.map(n=>n.toLowerCase())).size,100);
+ let running=0,maxRunning=0;const seen=[];
+ const s=await fixture(t,{fetchTelegram:async name=>{
+  running++;maxRunning=Math.max(maxRunning,running);seen.push(name);await new Promise(r=>setTimeout(r,2));running--;
+  const i=CHANNELS.indexOf(name);
+  return Array.from({length:9},(_,j)=>({...parseLink(`vless://11111111-1111-4111-8111-111111111111@node${i}-${j}.example.com:443#channel${i}-${j}`),source:'@'+name+' · وب'}));
+ },dnsSource:{fetch:async()=>[entry(1,'@feed · DNS/فید')],stop:async()=>{}}});
+ const r=await s.refresh();assert.equal(seen.length,100);assert(maxRunning<=8);assert.equal(r.items.length,500);
+ for(const channel of CHANNELS)assert(r.items.some(x=>x.source.includes('@'+channel+' · وب')),channel);
+ assert(r.items.some(x=>x.source.includes('DNS/فید')));
+});
+
+test('single deletion works before any ping, bulk deletion removes only failures and persists',async t=>{
+ const first=entry(1,'@a · وب'),failed=entry(2,'@b · وب'),untested=entry(3,'@c · وب');
+ const s=await fixture(t,{fetchTelegram:async n=>n===CHANNELS[0]?[first,failed,untested]:[]});
+ await s.refresh();assert.equal(await s.remove(first.id),1);assert(!s.get(first.id));
+ s.setLatency(failed.id,-1);assert.equal(await s.removeFailed(),1);assert(s.get(untested.id),'untested config must remain');
+ await s.refresh();assert(!s.get(first.id));assert(!s.get(failed.id));assert(s.get(untested.id));
+ const again=await fixture(t);again.file=s.file;await again.load();assert.equal(again.snapshot().hiddenCount,2);assert.equal(again.snapshot().items.length,1);
+ await s.restoreRemoved();await s.refresh();assert.equal(s.snapshot().items.length,3);
+});
+
+test('hostname geolocation waits until the user pings and reports only IP metadata',async t=>{
+ let queries=0;const c=entry(1,'@a · وب');
+ const s=await fixture(t,{fetchTelegram:async n=>n===CHANNELS[0]?[c]:[]});
+ s.resolveHost=async()=>{queries++;return '8.8.8.8'};s.geo={lookup:async()=> 'US'};
+ await s.refresh();assert.equal(queries,0);assert.equal(s.snapshot().items[0].countryCode,'');
+ s.setLatency(c.id,144);for(let i=0;i<20&&!s.snapshot().items[0].countryCode;i++)await new Promise(r=>setTimeout(r,2));
+ const item=s.snapshot().items[0];assert.equal(queries,1);assert.equal(item.countryCode,'US');assert.equal(item.countrySource,'ip');
+});
+
+test('DNS feed can use more than twenty channels supplied by its own profile',async t=>{
+ const channels=Array.from({length:30},(_,i)=>({Name:`feed${i+1}`}));
+ const endpoint=await listen(t,(req,res)=>{
+  if(req.url==='/api/channels')return json(res,channels);
+  if(req.url.startsWith('/api/refresh?channel='))return json(res,{});
+  const m=req.url.match(/^\/api\/messages\/(\d+)$/);
+  if(m){const n=Number(m[1]);return json(res,{messages:[{Text:`vless://11111111-1111-4111-8111-111111111111@feed${n}.example.com:443#feed${n}`} ]});}
+  res.writeHead(404);res.end();
+ });
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'lml-dns-many-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const source=new DnsFeedSource({executable:'none',dataDir:dir,expectedHash:null});source.init=async()=>endpoint;t.after(()=>source.stop());
+ const entries=await source.fetch();assert.equal(entries.length,30);assert(entries.every(x=>x.source.includes('DNS/فید')));assert(entries.some(x=>x.source.includes('@feed30')));
+});

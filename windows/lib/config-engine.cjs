@@ -6,6 +6,7 @@ const http=require('node:http');
 const tls=require('node:tls');
 const {spawn,execFile}=require('node:child_process');
 const {promisify}=require('node:util');
+const {performance}=require('node:perf_hooks');
 const {sha256}=require('./thefeed.cjs');
 const {buildXray}=require('./config-links.cjs');
 const exec=promisify(execFile);
@@ -37,13 +38,16 @@ function verifyThroughProxy(port,{host='www.cloudflare.com',timeout=12000,signal
   });
 }
 class ConfigEngine {
-  constructor({binDir,dataDir,proxy,onChange=()=>{},platform=process.platform,devBinary=null}){
+  constructor({binDir,dataDir,proxy,onChange=()=>{},platform=process.platform,devBinary=null,verify=verifyThroughProxy}){
     this.binDir=binDir;this.work=path.join(dataDir,'config-engine');this.file=path.join(this.work,'session.json');
-    this.proxy=proxy;this.onChange=onChange;this.platform=platform;this.devBinary=devBinary;
+    this.proxy=proxy;this.onChange=onChange;this.platform=platform;this.devBinary=devBinary;this.verify=verify;
     this.proc=null;this.startJob=null;this.stopJob=null;this.generation=0;this.proxyOn=false;this.busy=false;
-    this.state={state:'disconnected',detail:'آمادهٔ انتخاب کانفیگ',httpPort:0,socksPort:0,tested:null,name:''};
+    this.state={state:'disconnected',detail:'آمادهٔ انتخاب کانفیگ',httpPort:0,socksPort:0,tested:null,name:'',id:'',pingMs:null,connectedAt:null};
   }
-  set(state,detail,extra={}){this.state={...this.state,state,detail,...extra};this.onChange({...this.state});}
+  set(state,detail,extra={}){
+    const connectedAt=state==='connected'?(this.state.state==='connected'?this.state.connectedAt:Date.now()):null;
+    this.state={...this.state,state,detail,connectedAt,...extra};this.onChange({...this.state});
+  }
   snapshot(){return {...this.state};}
   active(){return this.busy||!!this.proc||['connecting','connected','disconnecting'].includes(this.state.state);}
   async cleanup(){await fs.rm(this.file,{force:true}).catch(()=>{});}
@@ -57,7 +61,7 @@ class ConfigEngine {
     if(this.active())throw new Error('ابتدا اتصال کانفیگ فعلی را قطع کن.');
     if(!c)throw new Error('یک کانفیگ را انتخاب کن.');
     if(this.platform!=='win32'&&!this.devBinary)throw new Error('اتصال کانفیگ در این نسخه فقط برای ویندوز است.');
-    const generation=++this.generation;this.busy=true;this.set('connecting','در حال آماده‌سازی هستهٔ اتصال…',{httpPort:0,socksPort:0,tested:null,name:c.remark||c.scheme.toUpperCase()});
+    const generation=++this.generation;this.busy=true;this.set('connecting','در حال آماده‌سازی هستهٔ اتصال…',{httpPort:0,socksPort:0,tested:null,name:c.remark||c.scheme.toUpperCase(),id:c.id||'',pingMs:null});
     const exe=this.devBinary||path.join(this.binDir,'xray-windows.exe');
     const check=()=>{if(generation!==this.generation)throw new Error('اتصال لغو شد.');};
     try{
@@ -99,10 +103,11 @@ class ConfigEngine {
       check();if(this.proc!==child)throw new Error('هستهٔ اتصال متوقف شد.');
       this.set('connected',systemProxy?'پراکسی ویندوز فعال است؛ در حال آزمایش مسیر…':`پراکسی محلی HTTP: 127.0.0.1:${httpPort}؛ در حال آزمایش مسیر…`,{httpPort,socksPort,tested:null});
       // Do not block the UI on a slow or dead public endpoint.
-      if(probe) void verifyThroughProxy(httpPort).then(ok=>{
+      const probeStarted=performance.now();
+      if(probe) void this.verify(httpPort).then(ok=>{
         if(this.proc!==child||generation!==this.generation)return;
         const prefix=systemProxy?'پراکسی ویندوز':`HTTP 127.0.0.1:${httpPort}`;
-        this.set('connected',ok?`${prefix} فعال است و آزمون HTTPS موفق بود.`:`${prefix} فعال است، اما آزمون HTTPS موفق نشد؛ کانفیگ دیگری را امتحان کن.`,{tested:ok});
+        this.set('connected',ok?`${prefix} فعال است و آزمون HTTPS موفق بود.`:`${prefix} فعال است، اما آزمون HTTPS موفق نشد؛ کانفیگ دیگری را امتحان کن.`,{tested:ok,pingMs:ok?Math.max(1,Math.round(performance.now()-probeStarted)):-1});
       });
       return this.snapshot();
     }catch(e){
@@ -128,7 +133,7 @@ class ConfigEngine {
     // flight, before claiming shutdown is complete or quitting the app.
     if(startJob)await startJob.catch(()=>{});
     if(this.proxyOn){this.proxyOn=false;try{await this.proxy.restore();}catch{this.set('error','بازگرداندن پراکسی قبلی ممکن نشد؛ تنظیمات ویندوز را بررسی کن.');throw new Error('بازگرداندن پراکسی قبلی ممکن نشد.');}}
-    await this.cleanup();this.set('disconnected','اتصال کانفیگ قطع است.',{httpPort:0,socksPort:0,tested:null,name:''});return this.snapshot();
+    await this.cleanup();this.set('disconnected','اتصال کانفیگ قطع است.',{httpPort:0,socksPort:0,tested:null,name:'',id:'',pingMs:null});return this.snapshot();
   }
 }
 module.exports={ConfigEngine,XRAY_SHA256,CRONET_SHA256,GEOIP_SHA256,GEOSITE_SHA256,freePort,verifyThroughProxy};

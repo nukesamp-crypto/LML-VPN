@@ -1,25 +1,15 @@
 /* LML palette for the unmodified official TheFeed client.
    Its DOM, JavaScript, network APIs, accessibility labels and user features
    remain upstream; this only changes visual design and navigation placement. */
-:root,
-:root[data-theme="dark"] {
-  --bg:#101b23 !important; --bg2:#080f17 !important; --sidebar-bg:#0d1821 !important;
-  --surface:#162733 !important; --surface2:#1b303a !important; --border:#30404a !important;
-  --accent:#e3c48a !important; --accent-hover:#f3d8a4 !important; --text:#f1eee7 !important;
-  --text-dim:#98aab2 !important; --text-secondary:#a8b6ba !important; --success:#70caac !important;
-  --error:#f08d7b !important; --send-color:#e3c48a !important; --msg-in:#1b3038 !important;
-  --msg-out:#3c4940 !important; --hover:#263941 !important; --card-bg:#172831 !important;
-  --bg-elevated:#1b2e38 !important; --radius-sm:9px !important; --radius-md:14px !important;
+:root, :root[data-theme="dark"], :root[data-theme="light"] {
+  --bg:#f8faf6 !important; --bg2:#f4f6f1 !important; --sidebar-bg:#fff !important;
+  --surface:#fff !important; --surface2:#edf5ec !important; --border:#e2eae0 !important;
+  --accent:#9b7c45 !important; --accent-hover:#7d6536 !important; --text:#314b3b !important;
+  --text-dim:#91a197 !important; --text-secondary:#748b7c !important; --success:#4f9670 !important;
+  --error:#bd705e !important; --send-color:#9b7c45 !important; --msg-in:#fff !important;
+  --msg-out:#e9f3e9 !important; --hover:#f0f6ef !important; --card-bg:#fff !important;
+  --bg-elevated:#fff !important; --radius-sm:9px !important; --radius-md:14px !important;
   --radius-lg:20px !important; --radius-pill:12px !important;
-}
-:root[data-theme="light"] {
-  --bg:#f6f2e9 !important; --bg2:#e6ded0 !important; --sidebar-bg:#eee7da !important;
-  --surface:#fffaf0 !important; --surface2:#e7ded0 !important; --border:#d1c4ae !important;
-  --accent:#855d25 !important; --accent-hover:#5d4019 !important; --text:#252d2b !important;
-  --text-dim:#6c7976 !important; --text-secondary:#65716f !important; --success:#28785e !important;
-  --error:#b54836 !important; --send-color:#855d25 !important; --msg-in:#fffaf0 !important;
-  --msg-out:#e4e6d6 !important; --hover:#ddd2c0 !important; --card-bg:#fffaf0 !important;
-  --bg-elevated:#fffaf0 !important;
 }
 html,body { background:var(--bg2) !important; }
 body { font-family:Vazirmatn,system-ui,sans-serif; }
@@ -31,7 +21,7 @@ body { font-family:Vazirmatn,system-ui,sans-serif; }
   border:1px solid var(--border) !important;
   border-radius:18px !important;
   overflow:hidden !important;
-  box-shadow:0 18px 60px rgba(0,0,0,.20) !important;
+  box-shadow:0 10px 35px rgba(61,91,67,.08) !important;
 }
 .sidebar {
   background:var(--sidebar-bg) !important;
@@ -80,7 +70,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .btn,.modal,.card,.settings-group,.resolver-card {
   border-radius:14px !important;
 }
-.modal { border:1px solid var(--border) !important; box-shadow:0 26px 90px #0008 !important; }
+.modal { border:1px solid var(--border) !important; box-shadow:0 26px 90px #41614630 !important; }
 /* Replace upstream's bottom floating bar with LML's fixed side rail. */
 .nav-bar {
   position:fixed !important; z-index:80 !important;
@@ -89,7 +79,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
   display:flex !important; flex-direction:column !important; align-items:stretch !important;
   gap:5px !important; padding:9px 6px !important; box-sizing:border-box !important;
   border:1px solid var(--border) !important; border-radius:18px !important;
-  background:var(--sidebar-bg) !important; box-shadow:0 18px 50px #0003 !important;
+  background:var(--sidebar-bg) !important; box-shadow:0 10px 30px #41614612 !important;
 }
 .nav-bar::before {
   content:'✦\a TheFeed'; white-space:pre; display:block;
@@ -117,20 +107,15 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 /* First-run language picker belongs to the embedded client but uses the same
    LML palette as the rest of this separate section. */
 #firstRunLangModal {
-  background: radial-gradient(ellipse at 50% 5%, #182d45, #081423 65%) !important;
-  font-family: 'Segoe UI', Tahoma, sans-serif !important;
+  background: radial-gradient(ellipse at 50% 5%,#fff,#f4f7ef 75%) !important;
+  font-family:'Segoe UI',Tahoma,sans-serif !important;
 }
-#firstRunLangModal .brand { color: #e5f4ff; letter-spacing: .04em; }
-#firstRunLangModal .subtitle { color: #96b1c6 !important; }
-#firstRunLangModal .lang-option {
-  border-color: #38516a !important;
-  border-radius: 12px !important;
-  background: #152a40 !important;
-  color: #f4f9ff !important;
-}
-#firstRunLangModal .lang-option:hover { border-color: #51d6b0 !important; }
+#firstRunLangModal .brand {color:#375340 !important;letter-spacing:.04em;}
+#firstRunLangModal .subtitle {color:#91a497 !important;}
+#firstRunLangModal .lang-option {border-color:#e4eade !important;border-radius:12px !important;background:#fff !important;color:#435c4a !important;}
+#firstRunLangModal .lang-option:hover {border-color:#a9c5aa !important;background:#f3f8f1 !important;}
 
-/* Dark foreground on LML's light-gold filled actions keeps labels legible. */
+/* White foreground on LML's darker-gold filled actions. */
 :root:not([data-theme="light"]) .btn-primary,
 :root:not([data-theme="light"]) .chat-btn-primary,
 :root:not([data-theme="light"]) .tel-btn-primary,
@@ -139,11 +124,15 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 :root:not([data-theme="light"]) .send-btn,
 :root:not([data-theme="light"]) .ch-autoupdate.on,
 :root:not([data-theme="light"]) .nav-badge-count,
-:root:not([data-theme="light"]) .chat-header-avatar.is-saved,
-:root:not([data-theme="light"]) .ch-item.active .ch-name,
-:root:not([data-theme="light"]) .ch-item.active .ch-preview {
-  color:#101b23 !important;
+:root:not([data-theme="light"]) .chat-header-avatar.is-saved {
+  color:#ffffff !important;
 }
 
 /* The About settings page is hidden per LML integration requirements. */
 #settingsTabBtnAbout, #settingsPanelAbout { display:none !important; }
+
+.ch-item.active .ch-name,.ch-item.active .ch-preview { color:var(--text) !important; }
+/* Upstream's first-run picker uses inline styles instead of classes. */
+#firstRunLangModal,#firstRunLangModal *{color:#385442 !important;}
+#firstRunLangModal button{background:#fff !important;border:1px solid #dce8da !important;box-shadow:0 8px 25px #56745a0d !important;}
+#firstRunLangModal button:hover{background:#f5faf3 !important;border-color:#aac8ad !important;}

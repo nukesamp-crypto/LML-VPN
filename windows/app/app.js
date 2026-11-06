@@ -28,7 +28,8 @@
   };
   let snap=null, hydrated=false, timer, allServers=[], serverLoaded=false, serverLoading=false, serverError='', actionBusy=false, countrySignature='', nextServerRetry=0, serverRetries=0;
   let activePage='home', configData={items:[],note:'',refreshing:false}, selectedConfig='', configRequested=false, probeState={running:false,done:0,total:0};
-  const headings={home:['آزادی، فقط یک لمس فاصله داره.','موتورت رو انتخاب کن و به اینترنت دلخواهت وصل شو.'],engines:['شیر و خورشید و لنترن','دو موتور مستقل، جدا از کانفیگ‌ها.'],settings:['همه‌چیز همون‌طور که تو می‌خوای.','تنظیمات برنامه رو شخصی‌سازی کن.'],feed:['تلگرام (سارتو)','TheFeed؛ کانال‌ها و پیام‌ها در همین پنجره.'],configs:['کانفیگ و زنجیره','کانال‌ها، DNS فید و پینگ روی اینترنت تو.']};
+  let feedCreditTimer=null,clockSince=null,clockFallback=null;
+  const headings={home:['آزادی، فقط یک لمس فاصله داره.','موتورت رو انتخاب کن و به اینترنت دلخواهت وصل شو.'],engines:['آی‌پی شیر و خورشید','آدرس‌های شیر و خورشید و تنظیمات موتورهای اتصال.'],settings:['همه‌چیز همون‌طور که تو می‌خوای.','تنظیمات برنامه رو شخصی‌سازی کن.'],feed:['تلگرام (The Feed)','TheFeed؛ کانال‌ها و پیام‌ها در همین پنجره.'],configs:['کانفیگ و زنجیره','کانال‌ها، DNS فید و پینگ روی اینترنت تو.']};
   function toast(message,error=false){
     const el=$('#toast'); el.textContent=message; el.classList.toggle('error',error); el.classList.add('show');
     clearTimeout(timer); timer=setTimeout(()=>el.classList.remove('show'),4200);
@@ -42,21 +43,22 @@
   function syncFeed(){if(activePage==='feed' && platform==='windows')void invoke('feedPosition',{bounds:feedBounds()}).catch(()=>{});}
   function go(page){
     if(!headings[page])return;
-    if(activePage==='feed' && page!=='feed' && platform==='windows')void invoke('hideFeed').catch(()=>{});
+    if(activePage==='feed' && page!=='feed' && platform==='windows'){clearTimeout(feedCreditTimer);$('#feed-credit').classList.add('hidden');void invoke('hideFeed').catch(()=>{});}
     activePage=page;
     $$('.page').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
     $$('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.nav===page));
     $('#page-heading').textContent=headings[page][0]; $('#page-subheading').textContent=headings[page][1];
     document.querySelector('.main').scrollTo?.({top:0,behavior:'smooth'}); window.scrollTo({top:0,behavior:'smooth'});
     if(page==='feed' && platform==='windows'){
-      setTimeout(()=>{if(activePage==='feed')void invoke('openFeed',{bounds:feedBounds()}).catch(e=>feedStatus({state:'error',message:message(e)}));},0);
-      setTimeout(syncFeed,350);
+      clearTimeout(feedCreditTimer);$('#feed-credit').classList.remove('hidden');
+      // Keep attribution visible for two seconds before placing the embedded view.
+      feedCreditTimer=setTimeout(()=>{if(activePage==='feed'){$('#feed-credit').classList.add('hidden');void invoke('openFeed',{bounds:feedBounds()}).catch(e=>feedStatus({state:'error',message:message(e)}));}},2000);
     }
     if(page==='configs' && platform==='windows' && !configRequested){configRequested=true;void loadConfigs(true);}
   }
   function feedStatus(st){
     const failed=st?.state==='error';$('#feed-message').textContent=failed?(st.message||'راه‌اندازی TheFeed ممکن نشد.'):'در حال آماده‌سازی TheFeed…';
-    $('#feed-retry').classList.toggle('hidden',!failed);$('#feed-update-note').classList.toggle('hidden',!st?.updateReady);
+    $('#feed-retry').classList.toggle('hidden',!failed);
   }
   window.lml?.onFeedStatus?.(feedStatus);
   window.addEventListener('resize',syncFeed);window.addEventListener('scroll',syncFeed,true);
@@ -80,6 +82,24 @@
     $('#auto-start').checked=!!s.settings.autoStart; $('#system-proxy').checked=!!s.settings.systemProxy;
     $('#routing-preset').value=s.settings.routingPreset||'global';$('#routing-custom').value=s.settings.routingCustom||'';hydrated=true;
   }
+  function renderClock(){
+    const seconds=clockSince===null?0:Math.max(0,Math.floor((Date.now()-clockSince)/1000));
+    const fmt=n=>String(n).padStart(2,'0');
+    $('#connection-timer').textContent=`${fmt(Math.floor(seconds/3600))}:${fmt(Math.floor(seconds/60)%60)}:${fmt(seconds%60)}`;
+  }
+  function updateMetrics(s,info,configActive){
+    const current=configActive?s.configConnection:(s.settings.engine==='shiro'?s.shiro:s.lantern);
+    if(info.kind==='connected'){
+      if(clockFallback===null)clockFallback=Date.now();
+      const reported=Number(current?.connectedAt);clockSince=Number.isFinite(reported)&&reported>0&&reported<=Date.now()?reported:clockFallback;
+    }else{clockSince=null;clockFallback=null;}
+    const ms=current?.pingMs;
+    $('#connection-ping').textContent=info.kind==='connected'&&Number.isFinite(ms)&&ms>=0?`${Math.round(ms)} ms`:'—';
+    $('#connection-ping').title=ms===-1?'آزمون HTTPS ناموفق بود.':'زمان پاسخ HTTPS از مسیر اتصال؛ نه پینگ ICMP';
+    renderClock();
+  }
+  function clockTick(){renderClock();setTimeout(clockTick,1000);}
+  setTimeout(clockTick,1000);
   function update(s){
     if(!s?.settings)return; snap=s; if(!hydrated)hydrate(s);
     if(platform==='android' && s.lantern?.serversReady && Array.isArray(s.lantern.servers)) {
@@ -105,7 +125,8 @@
     if(!configActive && platform==='windows' && engine==='shiro' && s.shiro?.state==='connected' && !s.settings.systemProxy && s.shiro.httpPort){
       $('#state-detail').textContent=`پراکسی محلی HTTP: 127.0.0.1:${s.shiro.httpPort} — تنظیم سیستم خاموش است.`;
     }
-    if(s.configProbe)probeState=s.configProbe;renderCountries();renderConfigs();renderUpdate(s.appUpdate);
+    updateMetrics(s,info,configActive);
+    if(s.configProbe)probeState=s.configProbe;renderCountries();renderConfigs();
   }
   async function act(method,data,success){
     if(actionBusy)return null;
@@ -199,14 +220,6 @@
     if(result)toast('کشور برای اتصال بعدی ذخیره شد.');
   });
   $('#refresh-countries').addEventListener('click',()=>{void loadLanternServers(true);});
-  function renderUpdate(u){
-    if(!u)return;$('#app-update-state').textContent=u.detail||'';
-    $('#app-update-install').classList.toggle('hidden',u.state!=='ready');
-    $('#app-update-check').disabled=['checking','downloading'].includes(u.state);
-  }
-  window.lml?.onAppUpdate?.(renderUpdate);
-  $('#app-update-check').addEventListener('click',async()=>{try{renderUpdate(await invoke('checkAppUpdate'));}catch(e){toast(message(e),true);}});
-  $('#app-update-install').addEventListener('click',async()=>{try{await invoke('installAppUpdate');}catch(e){toast(message(e),true);}});
   $('#feed-retry').addEventListener('click',async()=>{try{await invoke('retryFeed');}catch(e){feedStatus({state:'error',message:message(e)});}});
   function modeHint(){
     const mode=$('#config-mode').value;
@@ -228,22 +241,32 @@
     $('#config-refresh').disabled=!!configData.refreshing||probeState.running;
     const target=$('#config-list'),scrollTop=target.scrollTop;target.replaceChildren();
     for(const c of list.slice(0,1000)){
-      const button=document.createElement('button');button.className='config-item'+(selectedConfig===c.id?' selected':'');button.dataset.configId=c.id;
+      const row=document.createElement('div');row.className='config-item'+(selectedConfig===c.id?' selected':'');
+      const button=document.createElement('button');button.className='config-pick';button.dataset.configId=c.id;button.setAttribute('aria-label','انتخاب '+c.name);
+      const flag=document.createElement('span');flag.className='config-flag';
+      if(/^[A-Z]{2}$/.test(c.countryCode||'')){
+        const img=document.createElement('img');img.src=`assets/flags/${c.countryCode.toLowerCase()}.svg`;img.alt=c.countryCode;
+        img.addEventListener('error',()=>{flag.textContent='◌';});flag.append(img);
+        flag.title=c.countrySource==='ip'?'کشور تقریبی IP ورودی؛ الزاماً کشور خروجی نیست.':'پرچم اعلام‌شده در نام کانفیگ؛ تأیید موقعیت نیست.';
+      }else{flag.textContent='◌';flag.title='کشور مشخص نیست';}
       const info=document.createElement('span');info.className='config-item-main';const title=document.createElement('b');title.textContent=c.name;
       const sub=document.createElement('small');sub.textContent=`${c.source||''}  ·  ${c.network||''} / ${c.security||''}${c.insecure?'  ·  ⚠ TLS':''}`;if(c.insecure)sub.className='unsafe';
-      info.append(title,sub);const latency=document.createElement('span');latency.className='latency'+(c.latency===-1?' failed':'');latency.textContent=c.latency===-1?'ناموفق':(c.latency>0?`${Math.round(c.latency)} ms`:'');
-      const badge=document.createElement('span');badge.className='protocol';badge.textContent=c.scheme;button.append(info,latency,badge);target.append(button);
+      info.append(title,sub);const latency=document.createElement('span');latency.className='latency'+(c.latency===-1?' failed':'');latency.textContent=c.latency===-1?'ناموفق':(Number.isFinite(c.latency)&&c.latency>=0?`${Math.round(c.latency)} ms`:'—');
+      const badge=document.createElement('span');badge.className='protocol';badge.textContent=c.scheme;button.append(flag,info,latency,badge);
+      const remove=document.createElement('button');remove.className='config-delete';remove.dataset.removeConfig=c.id;remove.type='button';remove.title='حذف کانفیگ';remove.setAttribute('aria-label',`حذف ${c.name}`);remove.textContent='×';row.append(button,remove);target.append(row);
     }
     target.scrollTop=scrollTop;
     const chosen=all.find(x=>x.id===selectedConfig);$('#config-selected').textContent=chosen?`${chosen.name} — ${chosen.source}`:'هنوز کانفیگی انتخاب نشده است.';
     const st=snap?.configConnection||{state:'disconnected',detail:'آمادهٔ انتخاب کانفیگ'};
-    $('#config-state').textContent=st.detail||'';
+    $('#config-state').textContent=(st.detail||'')+(st.state==='connected'&&Number.isFinite(st.pingMs)&&st.pingMs>=0?` · ${Math.round(st.pingMs)} ms`:'');
     const isActive=['connecting','connected','disconnecting'].includes(st.state);
     $('#config-connect').textContent=isActive?'قطع اتصال':'اتصال';
     $('#config-connect').disabled=actionBusy||probeState.running||st.state==='disconnecting'||(!isActive&&!chosen);
     $('#config-mode').disabled=isActive||probeState.running;
     $('#config-test-selected').disabled=!chosen||isActive||probeState.running;$('#config-test-all').disabled=!all.length||isActive||probeState.running;
     $('#config-test-stop').classList.toggle('hidden',!probeState.running);
+    $('#config-remove-failed').disabled=!all.some(x=>x.latency===-1);
+    $('#config-restore').classList.toggle('hidden',!(configData.hiddenCount>0));
     $('#config-progress').textContent=probeState.running?`در حال پینگ: ${Number(probeState.done||0).toLocaleString('fa-IR')} از ${Number(probeState.total||0).toLocaleString('fa-IR')}`:'پینگ از مسیر کانفیگ روی اینترنت فعلی تو انجام می‌شود؛ فید فقط متن کانال‌ها را با DNS می‌رساند.';
     modeHint();
   }
@@ -256,7 +279,17 @@
   window.lml?.onConfigProgress?.(syncProbe);
   $('#config-refresh').addEventListener('click',()=>void loadConfigs(true));
   for(const id of ['config-source-filter','config-protocol-filter','config-sort','config-mode'])$('#'+id).addEventListener('change',renderConfigs);
-  $('#config-list').addEventListener('click',event=>{const item=event.target.closest('[data-config-id]');if(item){selectedConfig=item.dataset.configId;renderConfigs();}});
+  $('#config-list').addEventListener('click',async event=>{
+    const del=event.target.closest('[data-remove-config]');
+    if(del){try{const result=await invoke('configsRemove',{id:del.dataset.removeConfig});if(result&&Array.isArray(result.items)){configData=result;if(selectedConfig===del.dataset.removeConfig)selectedConfig='';renderConfigs();}}catch(e){toast(message(e),true);}return;}
+    const item=event.target.closest('[data-config-id]');if(item){selectedConfig=item.dataset.configId;renderConfigs();}
+  });
+  $('#config-remove-failed').addEventListener('click',async()=>{
+    try{const result=await invoke('configsRemoveFailed');if(result&&Array.isArray(result.items)){configData=result;if(!result.items.some(x=>x.id===selectedConfig))selectedConfig='';renderConfigs();toast(`${Number(result.removed||0).toLocaleString('fa-IR')} کانفیگ ناموفق حذف شد.`);}}catch(e){toast(message(e),true);}
+  });
+  $('#config-restore').addEventListener('click',async()=>{
+    try{const result=await invoke('configsRestore');if(result&&Array.isArray(result.items)){configData=result;renderConfigs();}toast('موارد حذف‌شده در دریافت بعدی بازمی‌گردند.');void loadConfigs(true);}catch(e){toast(message(e),true);}
+  });
   $('#routing-save').addEventListener('click',async()=>{const r=await act('saveSettings',{routingPreset:$('#routing-preset').value,routingCustom:$('#routing-custom').value},'مسیریابی برای اتصال بعدی ذخیره شد.');if(r?.settings)hydrate(r);});
   async function testConfigs(all){try{syncProbe(await invoke('configsTest',{all,id:selectedConfig}));}catch(e){toast(message(e),true);}}
   $('#config-test-selected').addEventListener('click',()=>void testConfigs(false));$('#config-test-all').addEventListener('click',()=>void testConfigs(true));
