@@ -57,7 +57,7 @@
 <br><br>
 <img src="docs/screenshots/configs.png" alt="تصویر واقعی فهرست کانفیگ‌ها با نام LML VPN، شماره، منبع و پرچم" width="100%">
 <br>
-<sub>تصاویر از اجرای رابط واقعی Electron در محیط آزمایشی لینوکس ثبت شده‌اند.</sub>
+<sub>.</sub>
 </div>
 
 <div dir="rtl">
