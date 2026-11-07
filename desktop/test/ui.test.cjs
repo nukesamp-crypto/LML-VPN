@@ -188,11 +188,18 @@ test('streaming verification progress and explicit stop remain responsive',async
  window.document.querySelector('#config-test-stop').click();await wait();assert(calls.includes('configsTestStop'));assert(window.document.querySelector('#config-test-stop').classList.contains('hidden'));
 });
 
-test('project acknowledgments have whitelisted GitHub links and neutral public-facing copy',async t=>{
+test('project acknowledgments are concise, link only to whitelisted projects, and retain licenses',async t=>{
  const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());const {window}=dom;window.scrollTo=()=>{};window.setInterval=()=>0;
  const snap={settings:{engine:'shiro',systemProxy:false,cdnIPs:'',autoStart:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'}};
- window.lml={platform:'windows',invoke:async method=>method==='snapshot'?snap:{items:[]}};window.eval(js);await wait();
- const main=fs.readFileSync(path.join(__dirname,'../main.cjs'),'utf8'),cards=[...window.document.querySelectorAll('.credit-project')];assert(cards.length>=20);
- for(const card of cards){const key=card.dataset.link;assert(key&&main.includes(`${key}:'https://github.com/`),key);assert(card.textContent.includes('github.com/'));}
- assert(!window.document.body.textContent.includes('نسخهٔ ویندوز'));assert(!/kill[ -]?switch/i.test(window.document.body.textContent));
+ const calls=[];window.lml={platform:'windows',invoke:async (method,data)=>{calls.push({method,data});return method==='snapshot'?snap:{items:[]};}};window.eval(js);await wait();
+ const d=window.document;d.querySelector('[data-nav="credits"]').click();await wait();
+ assert.equal(d.querySelector('#page-heading').textContent,'با سپاس از سازندگان متن‌باز');assert.equal(d.querySelector('#page-subheading').textContent,'');
+ const page=d.querySelector('[data-page="credits"]'),cards=[...page.querySelectorAll('.credit-project')],names=cards.map(c=>c.querySelector('strong').textContent);
+ for(const name of ['Electron','Node.js','TheFeed','Psiphon','Lantern','Xray-core'])assert(names.includes(name),name);
+ assert(!names.includes('BlackKnight'));assert(!names.includes('Telegram V2Ray Configs Collector'));assert.equal(page.querySelectorAll('p,small,em').length,0);
+ const main=fs.readFileSync(path.join(__dirname,'../main.cjs'),'utf8');
+ for(const card of cards){const key=card.dataset.link;assert(key&&main.includes(`${key}:'https://github.com/`),key);}
+ d.querySelector('[data-link="creditElectron"]').click();await wait();d.querySelector('[data-link="creditNode"]').click();await wait();d.querySelector('#open-notices').click();await wait();
+ assert(calls.some(c=>c.method==='openLink'&&c.data.key==='creditElectron'));assert(calls.some(c=>c.method==='openLink'&&c.data.key==='creditNode'));assert(calls.some(c=>c.method==='openNotices'));
+ assert(!d.body.textContent.includes('نسخهٔ ویندوز'));assert(!/kill[ -]?switch/i.test(d.body.textContent));
 });

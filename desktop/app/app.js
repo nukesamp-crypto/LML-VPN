@@ -29,7 +29,7 @@
   let snap=null, hydrated=false, timer, allServers=[], serverLoaded=false, serverLoading=false, serverError='', actionBusy=false, countrySignature='', nextServerRetry=0, serverRetries=0;
   let activePage='home', configData={items:[],note:'',refreshing:false}, selectedConfig='', configRequested=false, probeState={running:false,done:0,total:0};
   let feedCreditTimer=null,clockSince=null,clockFallback=null;
-  const headings={home:['آزادی، فقط یک لمس فاصله داره.','موتورت رو انتخاب کن و به اینترنت دلخواهت وصل شو.'],engines:['آی‌پی شیر و خورشید','آدرس‌های شیر و خورشید و تنظیمات موتورهای اتصال.'],settings:['همه‌چیز همون‌طور که تو می‌خوای.','تنظیمات برنامه رو شخصی‌سازی کن.'],feed:['تلگرام (The Feed)','TheFeed؛ کانال‌ها و پیام‌ها در همین پنجره.'],configs:['کانفیگ و زنجیره','کانفیگ‌های آزمایش‌شده و مرتب‌شده بر اساس زمان پاسخ.'],credits:['با سپاس از جامعهٔ متن‌باز','قدردانی از پروژه‌ها و همراهانی که این مسیر را ممکن کردند.']};
+  const headings={home:['آزادی، فقط یک لمس فاصله داره.','موتورت رو انتخاب کن و به اینترنت دلخواهت وصل شو.'],engines:['آی‌پی شیر و خورشید','آدرس‌های شیر و خورشید و تنظیمات موتورهای اتصال.'],settings:['همه‌چیز همون‌طور که تو می‌خوای.','تنظیمات برنامه رو شخصی‌سازی کن.'],feed:['تلگرام (The Feed)','TheFeed؛ کانال‌ها و پیام‌ها در همین پنجره.'],configs:['کانفیگ و زنجیره','کانفیگ‌های آزمایش‌شده و مرتب‌شده بر اساس زمان پاسخ.'],credits:['با سپاس از سازندگان متن‌باز','']};
   function toast(message,error=false){
     const el=$('#toast'); el.textContent=message; el.classList.toggle('error',error); el.classList.add('show');
     clearTimeout(timer); timer=setTimeout(()=>el.classList.remove('show'),4200);

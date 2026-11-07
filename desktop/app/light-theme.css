@@ -39,16 +39,13 @@ html,body{background:var(--bg);color:var(--ink)}
 .config-selected .selected-name{display:block;text-align:right;font:700 11px/1.6 'Segoe UI',sans-serif;color:#486251}.config-selected .selected-source{display:block;margin-top:4px;font-size:10px;color:#8aa08d;unicode-bidi:plaintext}
 
 /* A dedicated, respectful home for the projects behind the application. */
-.credits-hero{position:relative;overflow:hidden;padding:30px 34px;background:linear-gradient(120deg,#fff,#f7faf3 75%,#f6f2e6);border-color:#e8eee3}
-.credits-hero:after{content:'✦';position:absolute;left:34px;top:14px;color:#dfd4b8;font-size:90px;opacity:.45;pointer-events:none}
-.credits-symbol{width:43px;height:43px;display:grid;place-items:center;border-radius:14px;border:1px solid #e9dec4;background:#fff;color:#b39458;font-size:21px;margin-bottom:18px}
-.credits-hero h2{margin:9px 0 12px;color:#365140;font-size:21px}.credits-hero p{position:relative;z-index:1;max-width:760px;margin:8px 0;color:#718679;font-size:12px;line-height:2.1}
-.credits-heading{display:flex;align-items:end;justify-content:space-between;gap:15px;margin:27px 3px 15px}.credits-heading h3{margin:5px 0 0;color:#405b48;font-size:16px}.credits-heading>span{font-size:10px;color:#9ba99e}
+/* A concise acknowledgement grid; project links remain keyboard-accessible. */
 .credits-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.credit-project{display:flex;gap:11px;align-items:flex-start;text-align:right;padding:15px;background:#fff;border:1px solid #e7ece4;border-radius:14px;min-width:0;color:#425d4b;transition:background .18s,border-color .18s,transform .18s}
+.credit-project{display:flex;gap:12px;align-items:center;text-align:right;padding:16px;background:#fff;border:1px solid #e7ece4;border-radius:14px;min-width:0;color:#425d4b;transition:background .18s,border-color .18s,transform .18s}
 .credit-project:hover{background:#f9fcf7;border-color:#c8d9c7;transform:translateY(-1px)}
+.credit-project:focus-visible{outline:2px solid #6f9277;outline-offset:3px}
 .credit-project-mark{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:#f7f4e9;color:#b4975d}
-.credit-project-text{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}.credit-project strong{font:700 12px/1.5 'Segoe UI',sans-serif;text-align:left}.credit-project small{font-size:10px;color:#8b9b8f;line-height:1.8}.credit-project em{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:10px/1.5 'Segoe UI',sans-serif;color:#b1935b;font-style:normal}
-.credits-note{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 25px;margin-top:17px;background:#fafbf7}.credits-note h3{margin:0 0 5px;color:#46604e;font-size:14px}.credits-note p{margin:0;color:#8a9c8c;font-size:11px;line-height:2}.credits-note button{flex:none}
+.credit-project-text{display:flex;align-items:center;min-width:0}.credit-project strong{font:700 13px/1.5 'Segoe UI',sans-serif;text-align:left;overflow-wrap:anywhere}
+.credits-actions{display:flex;justify-content:flex-start;margin-top:20px}
 @media(max-width:1050px){.credits-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:720px){.credits-grid{grid-template-columns:1fr}.credits-heading{align-items:start;flex-direction:column}.credits-note{align-items:start;flex-direction:column}.credits-hero{padding:24px}}
+@media(max-width:720px){.credits-grid{grid-template-columns:1fr}}
