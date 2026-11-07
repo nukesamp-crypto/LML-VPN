@@ -37,3 +37,14 @@ test('disconnect cancels an intent waiting on probe teardown without starting a 
  guard.cancel();stopGate.resolve();await assert.rejects(intent,/لغو/);assert.equal(connected,false);probe.beforeStop=null;
  await wait(20);assert.equal(probe.starts.length,2,'pending work resumes after cancellation');
 });
+test('a scan is manual, remains active between source batches, completes once, and restarts explicitly',async t=>{
+ const probe=fakeProbe(),events=[];let ids=[],sourceBusy=true;
+ const auto=new AutoProbe({sources:{pendingIds:()=>ids},probe,canFinish:()=>!sourceBusy,onState:state=>events.push(state),delay:5});t.after(()=>auto.stop());
+ auto.schedule();await wait(15);assert.equal(probe.starts.length,0,'no probe before the user starts');
+ auto.enable();await wait(15);assert.equal(auto.enabled,true,'source is still producing more candidates');assert.deepEqual(events,[true]);
+ ids=['first'];auto.schedule();await wait(15);assert.deepEqual(probe.starts,[['first']]);
+ ids=[];probe.finish();auto.schedule();await wait(15);assert.equal(auto.enabled,true,'a gap between batches is not completion');
+ sourceBusy=false;auto.schedule();await wait(15);assert.equal(auto.enabled,false);assert.deepEqual(events,[true,false]);
+ ids=['next'];auto.schedule();await wait(15);assert.equal(probe.starts.length,1,'completion does not auto-restart');
+ auto.enable();await wait(15);assert.equal(probe.starts.length,2);await auto.disable();assert.deepEqual(events,[true,false,true,false]);
+});

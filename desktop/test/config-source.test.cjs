@@ -37,7 +37,7 @@ test('active feed DNS is copied to an isolated list without changing the user pr
  const userRequests=[],isolatedRequests=[];
  const user=await listen(t,(req,res)=>{userRequests.push([req.method,req.url]);json(res,{resolvers:['1.1.1.1:53','8.8.8.8:53']});});
  const isolated=await listen(t,(req,res)=>{let body='';req.on('data',b=>body+=b);req.on('end',()=>{isolatedRequests.push([req.method,req.url,body?JSON.parse(body):null]);if(req.method==='GET')json(res,{lists:[]});else json(res,{ok:true});});});
- const d=new DnsFeedSource({executable:'unused',dataDir:os.tmpdir(),expectedHash:null,sharedController:{start:async()=>user}});
+ const d=new DnsFeedSource({executable:'unused',dataDir:os.tmpdir(),expectedHash:null,sharedController:{endpoint:user,start:async()=>{throw Error('must not start shared feed')},stop:async()=>{throw Error('must not stop shared feed')}}});
  assert.equal(await d.useSharedResolvers(isolated),true);assert.deepEqual(userRequests,[['GET','/api/resolvers/active']]);
  const create=isolatedRequests.find(x=>x[1]==='/api/resolvers/lists');assert.deepEqual(create[2].resolvers,['1.1.1.1:53','8.8.8.8:53']);
  assert(isolatedRequests.some(x=>x[1]==='/api/resolvers/lists/select'&&x[2].noScan));
@@ -143,4 +143,74 @@ test('a successful result retains the pinned public address for its eventual con
  const prepared={...c,address:'8.8.8.8',transport:{...c.transport}};s.setLatency(c.id,80,prepared);
  assert.equal(s.getUsable(c.id).address,'8.8.8.8');assert.equal(s.getUsable(c.id).tls.sni,'example.com');
  await s.refresh();assert.equal(s.getUsable(c.id),null);assert(s.pendingIds().includes(c.id));
+});
+
+test('a scan does not start or stop the user’s shared TheFeed process',async t=>{
+ let starts=0,stops=0;
+ const d=new DnsFeedSource({executable:'unused',dataDir:os.tmpdir(),expectedHash:null,sharedController:{endpoint:null,start:async()=>{starts++;},stop:async()=>{stops++;}}});
+ assert.equal(await d.useSharedResolvers({port:1,secret:'unused'}),false);await d.cancel();
+ assert.equal(starts,0);assert.equal(stops,0);await d.stop();assert.equal(stops,0);
+});
+
+test('stopping a DNS scan aborts a hanging local request and permits a later restart',async t=>{
+ let served;const first=new Promise(r=>served=r);let hang=true,closed=false;
+ const endpoint=await listen(t,(req,res)=>{
+  if(req.url==='/api/channels'&&hang){served();req.on('close',()=>{closed=true});return;}
+  if(req.url==='/api/channels')return json(res,[{Name:'feed1'}]);
+  if(req.url.startsWith('/api/refresh?channel='))return json(res,{});
+  if(req.url==='/api/messages/1')return json(res,{messages:[{Text:link(1)}]});
+  res.writeHead(404);res.end();
+ });
+ const source=new DnsFeedSource({executable:'unused',dataDir:os.tmpdir(),expectedHash:null});source.init=async()=>endpoint;t.after(()=>source.stop());
+ const job=source.fetch();const rejected=assert.rejects(job,/متوقف/);await first;
+ const start=Date.now();await source.cancel();await rejected;assert(Date.now()-start<1000,'cancellation must not wait for the request timeout');
+ await new Promise(r=>setTimeout(r,20));assert(closed,'hanging local socket was closed');
+ hang=false;const result=await source.fetch();assert.equal(result.length,1);assert(result[0].source.includes('DNS/فید'));
+});
+
+test('stopping during DNS polling wakes its delay immediately',async t=>{
+ let served;const first=new Promise(r=>served=r);
+ const endpoint=await listen(t,(req,res)=>{if(req.url==='/api/channels'){served();return json(res,[]);}res.writeHead(404);res.end();});
+ const source=new DnsFeedSource({executable:'unused',dataDir:os.tmpdir(),expectedHash:null});source.init=async()=>endpoint;t.after(()=>source.stop());
+ const job=source.fetch(),rejected=assert.rejects(job,/متوقف/);await first;await new Promise(r=>setTimeout(r,30));
+ const start=Date.now();await source.cancel();await rejected;assert(Date.now()-start<500,'polling delay was interrupted');
+});
+
+test('stop cancels Telegram and DNS, retains verified partial results, ignores late candidates and can restart',async t=>{
+ const good=entry(1,'@early · وب'),late=entry(2,'@late · وب'),fresh=entry(3,'@fresh · وب');
+ let stage=0,started=0,dnsStarted,signalled;const dnsReady=new Promise(r=>dnsStarted=r),firstReady=new Promise(r=>signalled=r);let dnsCancels=0;
+ const abortResult=(signal,value)=>new Promise(resolve=>{if(signal.aborted)return resolve(value);signal.addEventListener('abort',()=>resolve(value),{once:true});});
+ const dnsSource={fetch:({signal})=>{dnsStarted();return stage===0?abortResult(signal,[late]):Promise.resolve([]);},cancel:async()=>{dnsCancels++;},stop:async()=>{}};
+ const s=await fixture(t,{dnsSource,fetchTelegram:async(name,{signal})=>{
+  started++;if(stage===1)return name===CHANNELS[0]?[fresh]:[];
+  if(name===CHANNELS[0]){signalled();return [good];}
+  return abortResult(signal,[late]);
+ }});
+ const job=s.refresh();await Promise.all([firstReady,dnsReady]);
+ for(let i=0;i<50&&!s.get(good.id);i++)await new Promise(r=>setTimeout(r,2));assert(s.get(good.id));mark(s,good.id,39);
+ await s.cancelRefresh();await job;assert.equal(dnsCancels,1);assert(started<200);assert(!s.get(late.id),'aborted late result must not be merged');
+ assert.deepEqual(s.snapshot().items.map(x=>x.id),[good.id]);assert.equal(s.snapshot().refreshing,false);assert.match(s.snapshot().note,/متوقف/);
+ assert((JSON.parse(await fs.readFile(s.file,'utf8'))).links.some(x=>x.raw===good.raw),'partial work is persisted');
+ stage=1;const restarted=await s.refresh();assert(s.get(fresh.id));assert.equal(restarted.items.length,0,'new session re-tests prior results');assert.equal(s.closed,false);
+});
+
+test('a verified cached candidate is not dropped when a new source batch arrives',async t=>{
+ const previous=entry(1,'@cached · وب'),fresh=entry(2,'@fresh · وب');
+ const s=await fixture(t,{fetchTelegram:async n=>n===CHANNELS[0]?[fresh]:[]});s.entries.set(previous.id,previous);
+ const job=s.refresh();mark(s,previous.id,52);await job;
+ assert(s.get(fresh.id));assert(s.get(previous.id));assert.deepEqual(s.snapshot().items.map(x=>x.id),[previous.id]);
+});
+
+
+test('normal DNS search completion also stops the isolated feed, never the shared feed',async t=>{
+ let privateStops=0,sharedStops=0;
+ const endpoint=await listen(t,(req,res)=>{
+  if(req.url==='/api/channels')return json(res,[{Name:'feed1'}]);
+  if(req.url.startsWith('/api/refresh?channel='))return json(res,{});
+  if(req.url==='/api/messages/1')return json(res,{messages:[{Text:link(1)}]});
+  res.writeHead(404);res.end();
+ });
+ const source=new DnsFeedSource({executable:'unused',dataDir:os.tmpdir(),expectedHash:null,sharedController:{stop:async()=>{sharedStops++;}}});
+ source.init=async()=>endpoint;source.controller={stop:async()=>{privateStops++;}};
+ assert.equal((await source.fetch()).length,1);assert.equal(privateStops,1);assert.equal(sharedStops,0);
 });

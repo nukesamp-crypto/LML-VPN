@@ -54,6 +54,8 @@ const LINKS = Object.freeze({
   creditSingbox:'https://github.com/getlantern/sing-box-minimal'
 });
 let mainWindow, feedFeature, configSources, configEngine, chainEngine, configProbe, autoProbe, settings={...DEFAULTS}, proxy, psiphonProcess=null, stopping=false, quitting=false;
+let scanStarting=false,scanStopping=false,scanStartJob=null,scanStopJob=null,notifyConfigs=()=>{};
+const configView=(value=configSources?.snapshot()||{})=>({...value,scanRunning:!!(autoProbe?.enabled||scanStarting||scanStopping),scanStopping});
 let configKind='direct';
 const anyConfigActive=()=>!!(chainEngine?.active()||configEngine?.active());
 let shiroState={state:'disconnected',detail:'آمادهٔ اتصال',httpPort:0,socksPort:0,regions:[],connectedAt:null,pingMs:null};
@@ -218,11 +220,25 @@ async function invoke(method,data){
     case 'hideFeed': return feedFeature?.hide() ?? true;
     case 'feedPosition': feedFeature?.position(data?.bounds); return true;
     case 'retryFeed': if(!feedFeature)throw new Error('TheFeed هنوز آماده نیست.'); await feedFeature.retry();return true;
-    case 'configsList': return configSources.snapshot();
+    case 'configsList': return configView();
     case 'configsRefresh': {
-      // A refresh restarts automatic verification without blocking connections.
-      await autoProbe.pause();autoProbe.enable();
-      try{const job=configSources.refresh();autoProbe.resume();return await job;}finally{autoProbe.resume();}
+      // One explicit user action starts both acquisition and live HTTPS tests.
+      // No source fetch or probe starts merely by opening the page.
+      if(scanStarting||scanStopping||autoProbe.enabled||configSources.busy||configProbe.job||connectionGuard.busy)throw new Error('جست‌وجو، آزمون یا اتصال دیگری در حال انجام است.');
+      scanStarting=true;notifyConfigs();
+      try{
+        const job=connectionGuard.run(async check=>{
+          if(anyConfigActive()||psiphonProcess||lanternConnectJob||lanternStopping)throw new Error('برای تست با اینترنت فعلی، ابتدا اتصال LML را قطع کن.');
+          await autoProbe.pause();check();
+          const ls=await refreshLantern(true,2500);check();
+          if(['connected','connecting','restarting','disconnecting'].includes(ls.state)||anyConfigActive()||psiphonProcess||lanternConnectJob||lanternStopping)throw new Error('برای تست با اینترنت فعلی، ابتدا اتصال LML را قطع کن.');
+          autoProbe.enable();
+          const fetching=configSources.refresh();
+          fetching.catch(()=>{configSources.note='دریافت برخی منابع ناموفق بود؛ نتیجه‌های موفق تا این لحظه حفظ شدند.';configSources.emit();});
+          autoProbe.resume();return true;
+        });
+        scanStartJob=job;await job;return configView();
+      }finally{scanStarting=false;scanStartJob=null;autoProbe.resume();notifyConfigs();}
     }
     case 'configsTest': return connectionGuard.run(async check=>{
       try{
@@ -233,10 +249,22 @@ async function invoke(method,data){
         const ids=data?.all?configSources.snapshot().items.map(c=>c.id):[data?.id];return configProbe.start(ids.filter(id=>configSources.getUsable(id)));
       }finally{autoProbe.resume();}
     });
-    case 'configsTestStop': await autoProbe.disable();return configProbe.snapshot();
-    case 'configsRemove': return {removed:await configSources.remove(data?.id),...configSources.snapshot()};
-    case 'configsRemoveFailed': return {removed:await configSources.removeFailed(),...configSources.snapshot()};
-    case 'configsRestore': await configSources.restoreRemoved();return configSources.snapshot();
+    case 'configsTestStop': {
+      if(!scanStopJob){
+        scanStopping=true;if(scanStarting)connectionGuard.cancel();notifyConfigs();
+        const starting=scanStartJob;
+        const job=(async()=>{
+          // Cancel source downloads, the isolated DNS feed, and all Xray/HTTPS probes.
+          await Promise.all([autoProbe.disable(),configSources.cancelRefresh()]);
+          if(starting)await starting.catch(()=>{});
+        })();scanStopJob=job;
+        job.then(()=>{if(scanStopJob===job){scanStopJob=null;scanStopping=false;notifyConfigs();}},()=>{if(scanStopJob===job){scanStopJob=null;scanStopping=false;notifyConfigs();}});
+      }
+      await scanStopJob;return {...configProbe.snapshot(),configs:configView()};
+    }
+    case 'configsRemove': return {removed:await configSources.remove(data?.id),...configView()};
+    case 'configsRemoveFailed': return {removed:await configSources.removeFailed(),...configView()};
+    case 'configsRestore': await configSources.restoreRemoved();return configView();
     case 'configsConnect': return connectionGuard.run(async check=>{
       try{
         // Connecting takes precedence over the background scan; interrupted
@@ -308,14 +336,15 @@ app.whenReady().then(async()=>{
   // Limit renderer redraws while hundreds of probe results arrive.
   const queuedSend=(channel,delay=350)=>{let timer=null,last;return value=>{last=value;if(timer)return;timer=setTimeout(()=>{timer=null;send(channel,last);},delay);timer.unref?.();};};
   const sendConfigs=queuedSend('configs:updated'),sendProgress=queuedSend('configs:progress');
-  configSources=new ConfigSources({app,binDir,sharedController:feedFeature.getController(),onChange:value=>{sendConfigs(value);autoProbe?.schedule();}});await configSources.load();
+  notifyConfigs=()=>sendConfigs(configView());
+  configSources=new ConfigSources({app,binDir,sharedController:feedFeature.getController(),onChange:value=>{sendConfigs(configView(value));autoProbe?.schedule();}});await configSources.load();
   const devXray=!app.isPackaged && process.platform!=='win32' && process.env.LML_XRAY_DEV_BIN;
   const devPsiphon=!app.isPackaged && process.platform!=='win32' && process.env.LML_PSIPHON_DEV_BIN;
   configEngine=new ConfigEngine({binDir:binDir(),dataDir:dataDir(),proxy,devBinary:devXray||null,onChange:value=>{chainEngine?.onXrayState(value);if(configKind==='direct'&&value.state==='connected'&&Number.isFinite(value.pingMs)&&value.id&&configSources.getUsable(value.id))configSources.setLatency(value.id,value.pingMs);if(['error','disconnected'].includes(value.state))autoProbe?.schedule();}});await configEngine.cleanup();
   const hop=new PsiphonHop({binDir:binDir(),dataDir:dataDir(),devBinary:devPsiphon||null});
   chainEngine=new ChainEngine({xray:configEngine,hop,proxy,onChange:value=>{if(['error','disconnected'].includes(value.state))autoProbe?.schedule();}});
   configProbe=new ConfigProbe({binDir:binDir(),dataDir:dataDir(),sources:configSources,devBinary:devXray||null,onChange:value=>{sendProgress(value);if(!value.running)autoProbe?.schedule();}});
-  autoProbe=new AutoProbe({sources:configSources,probe:configProbe,canRun:()=>!quitting&&!connectionGuard.busy&&!anyConfigActive()&&!psiphonProcess&&!lanternConnectJob&&!lanternStopping&&!['connected','connecting','restarting','disconnecting'].includes(lanternState.state)});
+  autoProbe=new AutoProbe({sources:configSources,probe:configProbe,canRun:()=>!quitting&&!connectionGuard.busy&&!anyConfigActive()&&!psiphonProcess&&!lanternConnectJob&&!lanternStopping&&!['connected','connecting','restarting','disconnecting'].includes(lanternState.state),canFinish:()=>!configSources.busy,onState:()=>notifyConfigs()});
   mainWindow.on('closed',()=>{mainWindow=null;app.quit();});
   mainWindow.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   mainWindow.webContents.on('will-navigate',(e)=>e.preventDefault());

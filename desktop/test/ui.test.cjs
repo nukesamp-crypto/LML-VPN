@@ -131,7 +131,7 @@ test('config section offers separate direct and two chain modes and starts the s
  window.document.querySelector('[data-config-id]').click();const sel=window.document.querySelector('#config-mode');sel.value='xray-via-psiphon';sel.dispatchEvent(new window.Event('change'));
  window.document.querySelector('#config-connect').click();await wait();assert(calls.some(x=>x.method==='configsConnect'&&x.data.mode==='xray-via-psiphon'));
  window.document.querySelector('#config-connect').click();await wait();assert(calls.some(x=>x.method==='configsDisconnect'));
- assert(calls.some(x=>x.method==='configsRefresh'));assert.equal(window.document.querySelector('#config-manual'),null);assert.equal(window.document.querySelector('#config-add'),null);assert.equal(window.document.querySelector('#subscription-url'),null);assert(window.document.querySelector('[data-nav="engines"]').textContent.includes('آی‌پی شیر و خورشید'));
+ assert(!calls.some(x=>x.method==='configsRefresh'),'opening the page must not fetch');window.document.querySelector('#config-refresh').click();await wait();assert(calls.some(x=>x.method==='configsRefresh'));assert.equal(window.document.querySelector('#config-manual'),null);assert.equal(window.document.querySelector('#config-add'),null);assert.equal(window.document.querySelector('#subscription-url'),null);assert(window.document.querySelector('[data-nav="engines"]').textContent.includes('آی‌پی شیر و خورشید'));
  dom.window.close();
 });
 
@@ -202,4 +202,25 @@ test('project acknowledgments are concise, link only to whitelisted projects, an
  d.querySelector('[data-link="creditElectron"]').click();await wait();d.querySelector('[data-link="creditNode"]').click();await wait();d.querySelector('#open-notices').click();await wait();
  assert(calls.some(c=>c.method==='openLink'&&c.data.key==='creditElectron'));assert(calls.some(c=>c.method==='openLink'&&c.data.key==='creditNode'));assert(calls.some(c=>c.method==='openNotices'));
  assert(!d.body.textContent.includes('نسخهٔ ویندوز'));assert(!/kill[ -]?switch/i.test(d.body.textContent));
+});
+
+test('finding is manual, stop is visible from startup through batch gaps, and stale start responses cannot restart it',async t=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());
+ const {window}=dom,calls=[];window.scrollTo=()=>{};window.setInterval=()=>0;let startResolve,onConfigs,onProgress;
+ const snap={settings:{engine:'shiro',systemProxy:false,cdnIPs:'',autoStart:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'},configConnection:{state:'disconnected'}};
+ const item={id:'d'.repeat(24),name:'LML VPN',source:'LML',scheme:'vless',network:'tcp',security:'tls',latency:43};
+ window.lml={platform:'windows',onConfigs:fn=>onConfigs=fn,onConfigProgress:fn=>onProgress=fn,invoke:async method=>{
+  calls.push(method);if(method==='snapshot')return snap;if(method==='configsList')return {items:[]};
+  if(method==='configsRefresh')return new Promise(r=>{startResolve=r});
+  if(method==='configsTestStop')return {running:false,configs:{items:[item],scanRunning:false,refreshing:false,note:'متوقف شد'}};
+  return true;
+ }};
+ window.eval(js);await wait();window.document.querySelector('[data-nav="configs"]').click();await wait();
+ const d=window.document,find=d.querySelector('#config-refresh'),stop=d.querySelector('#config-test-stop');
+ assert(!calls.includes('configsRefresh'));assert(stop.classList.contains('hidden'));
+ find.click();await wait();assert(calls.includes('configsRefresh'));assert(find.disabled);assert(!stop.classList.contains('hidden'));
+ stop.click();await wait();assert(calls.includes('configsTestStop'));assert(stop.classList.contains('hidden'));assert(!find.disabled);assert.match(d.querySelector('.config-item').textContent,/43 ms/);
+ startResolve({items:[],scanRunning:true,refreshing:true});await wait();assert(stop.classList.contains('hidden'));assert.match(d.querySelector('.config-item').textContent,/43 ms/,'late start reply ignored');
+ onConfigs({items:[item],scanRunning:true,refreshing:false});onProgress({running:false,done:0,total:0});assert(!stop.classList.contains('hidden'),'stop stays visible between probe batches');
+ onConfigs({items:[item],scanRunning:false,refreshing:false});assert(stop.classList.contains('hidden'));find.click();await wait();assert.equal(calls.filter(x=>x==='configsRefresh').length,2,'a new scan starts only on a new click');
 });
