@@ -1,50 +1,80 @@
 <p align="center">
-  <img src="desktop/app/assets/lml-wordmark.png" alt="LML" width="200">
+  <img src="docs/readme/banner.jpg" alt="LML VPN: موتورهای اتصال، کانفیگ و TheFeed" width="100%">
 </p>
-
-<h1 align="center">LML VPN</h1>
-
-<p align="center">موتورهای اتصال، کانفیگ‌های عمومی و TheFeed در یک برنامه با رابط فارسی</p>
 
 <p align="center">
-  <a href="https://github.com/nukesamp-crypto/LML-VPN/releases/latest"><strong>دانلود آخرین نسخه</strong></a>
-  ·
-  <a href="https://github.com/nukesamp-crypto/LML-VPN/releases/download/v1.0.1-lml/LML-VPN-Setup-1.0.1-LML.exe">دانلود مستقیم نصاب ۱.۰.۱</a>
-  ·
-  <a href="https://github.com/nukesamp-crypto/LML-VPN/releases/tag/v1.0.1-lml">فایل‌های انتشار و سورس</a>
+  <a href="https://github.com/nukesamp-crypto/LML-VPN/releases/download/v1.0.1-lml/LML-VPN-Setup-1.0.1-LML.exe"><img src="docs/readme/download.png" width="220" alt="دانلود نصاب ۱.۰.۱"></a>
+  &nbsp;
+  <a href="https://github.com/nukesamp-crypto/LML-VPN/releases/latest"><img src="docs/readme/release.png" width="220" alt="صفحهٔ انتشار"></a>
 </p>
+
+<p align="center"><sub>نسخهٔ ۱.۰.۱ &nbsp; · &nbsp; ویندوز ۶۴ بیتی &nbsp; · &nbsp; GPL-3.0-or-later</sub></p>
 
 <div dir="rtl">
 
 ## قابلیت‌ها
 
-- **دو موتور اتصال مستقل:** شیر و خورشید بر پایهٔ Psiphon و لنترن بر پایهٔ Radiance. هستهٔ لنترن همراه برنامه است و به نصب جداگانه نیاز ندارد.
-- **انتخاب کشور یا سرور:** انتخاب مقصد متناسب با موتور و سرورهای در دسترس؛ در تنظیمات شیر و خورشید هم می‌توان IP یا CIDR لبهٔ CDN را تعیین کرد.
-- **پیدا کردن کانفیگ عمومی:** جست‌وجو در حداکثر ۴۰۰ کانال عمومی تلگرام با میرور TheFeed از طریق Google Translate و آزمایش کانفیگ‌ها با Xray. نتیجه‌های جست‌وجو پس از تست موفق به فهرست اضافه می‌شوند.
-- **پروتکل‌های کانفیگ:** پشتیبانی از VLESS، VMess، Trojan و Shadowsocks در ترکیب‌های پشتیبانی‌شده.
-- **مدیریت نتایج:** فیلتر بر اساس پروتکل، مرتب‌سازی بر اساس تأخیر، تست مجدد، حذف موارد ناموفق و توقف جست‌وجو با حفظ نتیجه‌های موفق. برای کانفیگ‌ها در صورت مشخص بودن، پرچم کشور نیز نمایش داده می‌شود.
-- **اتصال مستقیم یا زنجیره‌ای:** استفاده از خود کانفیگ، عبور سایفون از مسیر کانفیگ، یا عبور کانفیگ از مسیر سایفون.
-- **مسیریابی پیشرفته:** پیش‌تنظیم‌های مسیریابی و امکان تعریف قانون برای دامنه و IP با مسیر مستقیم، پراکسی یا مسدودسازی. این قوانین در حالت «سایفون از مسیر کانفیگ» اعمال نمی‌شوند.
-- **TheFeed درون برنامه:** دسترسی به محیط TheFeed برای خواندن کانال‌ها و استفاده از امکانات پیام‌رسان آن، بدون نصب جداگانه. دسترسی به امکانات آن به تنظیمات و شبکه بستگی دارد.
-- **وضعیت و تنظیمات:** نمایش وضعیت و مدت اتصال و تأخیر مسیر، امکان اجرای برنامه با روشن‌شدن دستگاه و تنظیم خودکار پراکسی سیستم برای سایفون و کانفیگ‌ها. تنظیم قبلی پراکسی هنگام قطع اتصال بازگردانده می‌شود؛ اجرای خودکار به معنی اتصال خودکار نیست.
+<table dir="rtl">
+  <tr>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/engine.svg" width="42" alt=""><br>
+      <strong>موتورهای اتصال</strong><br>
+      شیر و خورشید بر پایهٔ Psiphon و لنترن بر پایهٔ Radiance، با امکان انتخاب کشور یا سرور و تنظیم IP لبهٔ CDN برای سایفون.
+    </td>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/search.svg" width="42" alt=""><br>
+      <strong>جست‌وجوی کانفیگ</strong><br>
+      جست‌وجو در حداکثر ۴۰۰ کانال عمومی با میرور TheFeed از طریق Google و تست کانفیگ‌ها.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/protocols.svg" width="42" alt=""><br>
+      <strong>پروتکل‌ها</strong><br>
+      پشتیبانی از VLESS، VMess، Trojan و Shadowsocks در ترکیب‌های پشتیبانی‌شده.
+    </td>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/chain.svg" width="42" alt=""><br>
+      <strong>اتصال زنجیره‌ای</strong><br>
+      اتصال با کانفیگ به‌تنهایی یا ترکیب سایفون و کانفیگ در هر دو جهت.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/feed.svg" width="42" alt=""><br>
+      <strong>TheFeed</strong><br>
+      خواندن کانال‌ها و استفاده از پیام‌رسان TheFeed در محیط برنامه.
+    </td>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/routing.svg" width="42" alt=""><br>
+      <strong>مسیریابی</strong><br>
+      تعریف قانون برای دامنه و IP با مسیر مستقیم، پراکسی یا مسدودسازی در حالت‌های پشتیبانی‌شده.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/results.svg" width="42" alt=""><br>
+      <strong>مدیریت کانفیگ‌ها</strong><br>
+      فیلتر، تست مجدد و مرتب‌سازی بر اساس تأخیر؛ توقف جست‌وجو با حفظ نتایج و نمایش پرچم کشور در صورت مشخص بودن.
+    </td>
+    <td width="50%" valign="top" dir="rtl">
+      <img src="docs/readme/settings.svg" width="42" alt=""><br>
+      <strong>وضعیت و تنظیمات</strong><br>
+      نمایش مدت اتصال، تنظیم پراکسی سیستم و اجرای برنامه هنگام روشن‌شدن دستگاه.
+    </td>
+  </tr>
+</table>
 
-## نصب و شروع
+## شروع سریع
 
-نسخهٔ منتشرشده برای **ویندوز ۶۴ بیتی** است.
+۱. نصاب را دانلود و اجرا کنید.
 
-1. نصاب را از [صفحهٔ آخرین انتشار](https://github.com/nukesamp-crypto/LML-VPN/releases/latest) دریافت و اجرا کنید. نصب ممکن است اجازهٔ مدیر بخواهد. نصاب امضای دیجیتال ندارد و ممکن است ویندوز دربارهٔ آن هشدار دهد.
-2. برنامه را باز کنید، یکی از موتورهای اتصال را انتخاب کنید و دکمهٔ اتصال را بزنید.
-3. برای استفاده از کانفیگ عمومی، به بخش **کانفیگ و زنجیره** بروید، **پیدا کردن و تست** را بزنید و پس از پیدا شدن نتیجهٔ موفق، کانفیگ و مسیر دلخواه را انتخاب و وصل شوید. برای تست و اتصال کانفیگ، ابتدا اتصال فعال دیگر LML را قطع کنید.
+۲. در برنامه موتور موردنظر را انتخاب کنید و وصل شوید.
 
-نسخه‌های جدید به‌صورت دستی از صفحهٔ انتشار دریافت می‌شوند. فایل `SHA256SUMS.txt` نیز برای بررسی صحت دانلود در همان صفحه قرار دارد.
-
-
-
+۳. برای کانفیگ عمومی، اتصال فعال را قطع کنید؛ در بخش **کانفیگ و زنجیره**، **پیدا کردن و تست** را بزنید و یکی از نتایج را انتخاب و وصل شوید.
 
 ## سورس و مجوز
 
-سورس برنامه در همین مخزن و بستهٔ سورس به همراه بخشی از سورس‌های بالادستی در [صفحهٔ انتشار](https://github.com/nukesamp-crypto/LML-VPN/releases/tag/v1.0.1-lml) در دسترس است. مجوز پروژه [GPL-3.0-or-later](LICENSE) است؛ جزئیات اجزای دیگر در [اعلان‌های شخص ثالث](THIRD-PARTY-NOTICES.md) آمده‌اند.
-
-LML VPN پروژه‌ای مستقل است و محصول رسمی یا مورد تأیید پروژه‌های نام‌برده نیست.
+[بستهٔ سورس](https://github.com/nukesamp-crypto/LML-VPN/releases/tag/v1.0.1-lml) · [مجوز پروژه](LICENSE) · [اجزای شخص ثالث](THIRD-PARTY-NOTICES.md)
 
 </div>
