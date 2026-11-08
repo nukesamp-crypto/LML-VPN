@@ -34,9 +34,9 @@ func expectedPath() string {
 }
 
 var getServerPID = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetNamedPipeServerProcessId")
-var allowed = map[string]string{
-	"/vpn/status": "GET", "/vpn/connect": "POST", "/vpn/disconnect": "POST",
-	"/server/selected": "POST", "/servers": "GET",
+var allowed = map[string]bool{
+	"GET /vpn/status": true, "POST /vpn/connect": true, "POST /vpn/disconnect": true,
+	"GET /server/selected": true, "POST /server/selected": true, "GET /servers": true,
 }
 
 type Request struct {
@@ -123,7 +123,7 @@ func main() {
 	if err := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&in); err != nil {
 		fail("invalid request")
 	}
-	if allowed[in.Path] != in.Method {
+	if !allowed[in.Method+" "+in.Path] {
 		fail("unsupported request")
 	}
 	transport := newLanternTransport(func(ctx context.Context, _, _ string) (net.Conn, error) {

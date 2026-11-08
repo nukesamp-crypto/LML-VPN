@@ -8,9 +8,9 @@ const {spawn} = require('node:child_process');
 let helperPath = '';
 function configureHelper(path){ helperPath=path; }
 const PIPE = '\\\\.\\pipe\\LMLVPN\\lantern';
-const allowed = new Set(['/vpn/status','/vpn/connect','/vpn/disconnect','/server/selected','/servers']);
+const allowed = new Set(['GET /vpn/status','POST /vpn/connect','POST /vpn/disconnect','GET /server/selected','POST /server/selected','GET /servers']);
 function request(method, endpoint, body, options = {}) {
-  if (!allowed.has(endpoint) || !['GET','POST'].includes(method)) return Promise.reject(new Error('درخواست نامعتبر است.'));
+  if (!allowed.has(method+' '+endpoint)) return Promise.reject(new Error('درخواست نامعتبر است.'));
   if (options.signal?.aborted) return Promise.reject(new Error('درخواست اتصال لغو شد.'));
   if (process.platform==='win32' && !options.socketPath) return helperRequest(method,endpoint,body,options);
   return new Promise((resolve,reject)=>{
@@ -78,4 +78,19 @@ async function status(options){const s=await request('GET','/vpn/status',null,op
 async function servers(options){return cleanServers(await request('GET','/servers',null,options));}
 async function connect(tag,options){return request('POST','/vpn/connect',{tag:tag||''},options);}
 async function disconnect(options){return request('POST','/vpn/disconnect',null,options);}
-module.exports={PIPE,request,status,servers,cleanServers,connect,disconnect,configureHelper,helperRequest};
+// Expose only the number, never the selected server's credentials or options.
+function historyLatency(server){
+  const h=server?.selection_history,ms=h?.last_success_delay_ms;
+  const at=Date.parse(h?.last_outcome_at||h?.updated_at||'');
+  const fresh=Number.isFinite(at)&&Date.now()-at<=5*60*1000&&at<=Date.now()+30000;
+  return fresh&&Number.isFinite(ms)&&ms>0&&ms<=120000&&!(Number(h?.consecutive_failures)>0)?Math.round(ms):null;
+}
+async function selectedLatency(options){
+  const selected=await request('GET','/server/selected',null,options);
+  if(!selected?.exists||!selected.server||typeof selected.server.tag!=='string')return null;
+  // The explicit-selection settings object may carry an old history. Prefer
+  // the live server registry snapshot when available.
+  try{const list=await request('GET','/servers',null,options);if(Array.isArray(list)){const live=list.find(x=>x?.tag===selected.server.tag);if(live)return historyLatency(live);}}catch{}
+  return historyLatency(selected.server);
+}
+module.exports={PIPE,request,status,servers,cleanServers,connect,disconnect,selectedLatency,historyLatency,configureHelper,helperRequest};

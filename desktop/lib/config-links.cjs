@@ -121,5 +121,5 @@ function extractLinks(text,source){
     try{const c=parseLink(raw);if(!seen.has(c.id)){seen.add(c.id);found.push({...c,source:trimText(source,50)});}}catch{}
   }return found;
 }
-function publicEntry(c){return {id:c.id,scheme:c.scheme.toUpperCase(),name:PUBLIC_CONFIG_NAME,source:'LML',network:c.transport.network,security:c.transport.security,insecure:c.tls.insecure};}
+function publicEntry(c){return {id:c.id,scheme:c.scheme.toUpperCase(),name:PUBLIC_CONFIG_NAME,source:'Google',network:c.transport.network,security:c.transport.security,insecure:c.tls.insecure};}
 module.exports={parseLink,buildXray,extractLinks,publicEntry,safeHost,PUBLIC_CONFIG_NAME};

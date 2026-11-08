@@ -153,8 +153,8 @@ test('connection duration and measured HTTPS latency are displayed without inven
 test('verified config list shows country metadata, supports deletion and counts failures separately',async t=>{
  const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());const {window}=dom,calls=[];window.scrollTo=()=>{};window.setInterval=()=>0;
  const snapshot={settings:{engine:'shiro',systemProxy:true,cdnIPs:'',autoStart:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'}};
- let items=[{id:'a'.repeat(24),name:'DE sample',source:'LML',scheme:'vless',network:'tcp',security:'tls',latency:52,countryCode:'DE',countrySource:'label'},
- {id:'b'.repeat(24),name:'unknown country',source:'LML',scheme:'vless',network:'tcp',security:'tls',latency:81,countryCode:''}];
+ let items=[{id:'a'.repeat(24),name:'DE sample',source:'Google',scheme:'vless',network:'tcp',security:'tls',latency:52,countryCode:'DE',countrySource:'label'},
+ {id:'b'.repeat(24),name:'unknown country',source:'Google',scheme:'vless',network:'tcp',security:'tls',latency:81,countryCode:''}];
  window.lml={platform:'windows',invoke:async(method,data)=>{calls.push({method,data});if(method==='snapshot')return snapshot;if(method==='configsList'||method==='configsRefresh')return {items,hiddenCount:0,failedCount:1};if(method==='configsRemove'){items=items.filter(x=>x.id!==data.id);return {items,removed:1,hiddenCount:1,failedCount:1};}return true;}};
  window.eval(js);await wait();window.document.querySelector('[data-nav="configs"]').click();await wait();
  const flag=window.document.querySelector('.config-flag img');assert(flag);assert.match(flag.getAttribute('src'),/flags\/de\.svg/);assert.match(flag.parentElement.title,/نام کانفیگ/);
@@ -182,7 +182,7 @@ test('streaming verification progress and explicit stop remain responsive',async
  const snap={settings:{engine:'shiro',systemProxy:false,cdnIPs:'',autoStart:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'},configConnection:{state:'disconnected'}};
  window.lml={platform:'windows',onConfigs:fn=>onConfigs=fn,onConfigProgress:fn=>onProgress=fn,invoke:async(method)=>{calls.push(method);if(method==='snapshot')return snap;if(method==='configsTestStop')return {running:false,done:6,total:20};return {items:[]};}};
  window.eval(js);await wait();window.document.querySelector('[data-nav="configs"]').click();await wait();
- onConfigs({items:[{id:'a'.repeat(24),name:'LML VPN',source:'LML',scheme:'vless',network:'tcp',security:'tls',latency:37}],candidateCount:20,failedCount:3});
+ onConfigs({items:[{id:'a'.repeat(24),name:'LML VPN',source:'Google',scheme:'vless',network:'tcp',security:'tls',latency:37}],candidateCount:20,failedCount:3});
  onProgress({running:true,done:6,total:20});assert.equal(window.document.querySelectorAll('.config-item').length,1);assert.match(window.document.querySelector('.config-item').textContent,/37 ms/);
  assert.match(window.document.querySelector('#config-progress').textContent,/۲۰/);assert(!window.document.querySelector('#config-test-stop').classList.contains('hidden'));
  window.document.querySelector('#config-test-stop').click();await wait();assert(calls.includes('configsTestStop'));assert(window.document.querySelector('#config-test-stop').classList.contains('hidden'));
@@ -196,7 +196,7 @@ test('project acknowledgments are concise, link only to whitelisted projects, an
  assert.equal(d.querySelector('#page-heading').textContent,'با سپاس از سازندگان متن‌باز');assert.equal(d.querySelector('#page-subheading').textContent,'');
  const page=d.querySelector('[data-page="credits"]'),cards=[...page.querySelectorAll('.credit-project')],names=cards.map(c=>c.querySelector('strong').textContent);
  for(const name of ['Electron','Node.js','TheFeed','Psiphon','Lantern','Xray-core'])assert(names.includes(name),name);
- assert(!names.includes('BlackKnight'));assert(!names.includes('Telegram V2Ray Configs Collector'));assert.equal(page.querySelectorAll('p,small,em').length,0);
+ assert(!names.includes('BlackKnight'));assert(!names.includes('Telegram V2Ray Configs Collector'));assert.match(page.querySelector('.credits-note').textContent,/استفاده کرده‌ایم/);assert.match(page.querySelector('.credits-note').textContent,/کمکی نکرده‌اند/);
  const main=fs.readFileSync(path.join(__dirname,'../main.cjs'),'utf8');
  for(const card of cards){const key=card.dataset.link;assert(key&&main.includes(`${key}:'https://github.com/`),key);}
  d.querySelector('[data-link="creditElectron"]').click();await wait();d.querySelector('[data-link="creditNode"]').click();await wait();d.querySelector('#open-notices').click();await wait();
@@ -208,7 +208,7 @@ test('finding is manual, stop is visible from startup through batch gaps, and st
  const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());
  const {window}=dom,calls=[];window.scrollTo=()=>{};window.setInterval=()=>0;let startResolve,onConfigs,onProgress;
  const snap={settings:{engine:'shiro',systemProxy:false,cdnIPs:'',autoStart:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'},configConnection:{state:'disconnected'}};
- const item={id:'d'.repeat(24),name:'LML VPN',source:'LML',scheme:'vless',network:'tcp',security:'tls',latency:43};
+ const item={id:'d'.repeat(24),name:'LML VPN',source:'Google',scheme:'vless',network:'tcp',security:'tls',latency:43};
  window.lml={platform:'windows',onConfigs:fn=>onConfigs=fn,onConfigProgress:fn=>onProgress=fn,invoke:async method=>{
   calls.push(method);if(method==='snapshot')return snap;if(method==='configsList')return {items:[]};
   if(method==='configsRefresh')return new Promise(r=>{startResolve=r});
@@ -223,4 +223,73 @@ test('finding is manual, stop is visible from startup through batch gaps, and st
  startResolve({items:[],scanRunning:true,refreshing:true});await wait();assert(stop.classList.contains('hidden'));assert.match(d.querySelector('.config-item').textContent,/43 ms/,'late start reply ignored');
  onConfigs({items:[item],scanRunning:true,refreshing:false});onProgress({running:false,done:0,total:0});assert(!stop.classList.contains('hidden'),'stop stays visible between probe batches');
  onConfigs({items:[item],scanRunning:false,refreshing:false});assert(stop.classList.contains('hidden'));find.click();await wait();assert.equal(calls.filter(x=>x==='configsRefresh').length,2,'a new scan starts only on a new click');
+});
+
+test('Ather is visibly coming soon and cannot be opened',async t=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());const {window}=dom;window.scrollTo=()=>{};window.setInterval=()=>0;
+ const snap={settings:{engine:'shiro',systemProxy:true},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'}};
+ window.lml={platform:'windows',invoke:async method=>method==='snapshot'?snap:{items:[]}};window.eval(js);await wait();
+ const d=window.document,button=d.querySelector('.nav-coming');assert(button.disabled);assert.match(button.textContent,/Ather/);assert.match(button.textContent,/به‌زودی/);
+ assert.equal(d.querySelector('[data-page="ather"]'),null);button.click();assert(d.querySelector('[data-page="home"]').classList.contains('active'));
+});
+
+test('1,000 successful configs use bounded pages and progress updates preserve existing row nodes',async t=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());const {window}=dom;window.scrollTo=()=>{};window.setInterval=()=>0;
+ const items=Array.from({length:1000},(_,i)=>({id:i.toString(16).padStart(24,'0'),name:'LML VPN',source:'Google',scheme:'VLESS',network:'tcp',security:'tls',latency:i+1}));
+ const snap={settings:{engine:'shiro',systemProxy:true,systemTunnel:true},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'},configConnection:{state:'disconnected'}};
+ let progress;window.lml={platform:'windows',onConfigProgress:fn=>progress=fn,invoke:async method=>method==='snapshot'?snap:{items}};
+ window.eval(js);await wait();const d=window.document;d.querySelector('[data-nav="configs"]').click();await wait();
+ assert.equal(d.querySelectorAll('.config-item').length,50);assert.match(d.querySelector('#config-page').textContent,/۲۰/);
+ const first=d.querySelector('.config-item');progress({running:true,done:23,total:1205});assert.equal(d.querySelector('.config-item'),first);
+ d.querySelector('#config-next').click();assert.equal(d.querySelectorAll('.config-item').length,50);assert.match(d.querySelector('#config-page').textContent,/۲/);assert.notEqual(d.querySelector('.config-item'),first);
+ d.querySelector('#config-prev').click();assert.equal(d.querySelectorAll('.config-item').length,50);assert.match(d.querySelector('#config-page').textContent,/۱/);
+});
+
+test('scan progress is cumulative across batches and older snapshots cannot roll it backwards',async t=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());const {window}=dom;window.scrollTo=()=>{};window.setInterval=()=>0;
+ const snap={settings:{engine:'shiro',systemProxy:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'}};let onConfigs,onProgress;
+ window.lml={platform:'windows',onConfigs:fn=>onConfigs=fn,onConfigProgress:fn=>onProgress=fn,invoke:async method=>method==='snapshot'?snap:{items:[]}};
+ window.eval(js);await wait();window.document.querySelector('[data-nav="configs"]').click();await wait();
+ const state={items:[],revision:10,scanRunning:true,refreshing:true,note:'کانال‌های وب: ۵۰ از ۴۰۰',scan:{id:7,found:1200,tested:1000,channelsDone:50,channelsTotal:400,skipped:0}};
+ onConfigs(state);onProgress({running:true,done:1,total:100});const text=()=>window.document.querySelector('#config-progress').textContent;
+ assert(text().includes((1000).toLocaleString('fa-IR')));assert(text().includes((1200).toLocaleString('fa-IR')));assert(!text().includes('در این نوبت'));
+ onConfigs({...state,revision:9,scan:{...state.scan,tested:100,found:100}});assert(text().includes((1000).toLocaleString('fa-IR')),'older snapshot ignored');
+ onConfigs({...state,revision:11,scan:{...state.scan,tested:1010,found:1300}});assert(text().includes((1010).toLocaleString('fa-IR')));assert(text().includes((1300).toLocaleString('fa-IR')));
+});
+
+test('all former lion-and-sun brand locations show only LML, while scenery and country flags are retained',()=>{
+ const dom=new JSDOM(html),d=dom.window.document;
+ const logos=['.brand img','.mobile-brand img','.engine-choice[data-engine=shiro] img','.engine-detail-grid .detail-card:first-child img'];
+ for(const selector of logos){const img=d.querySelector(selector);assert(img,selector);assert.equal(img.getAttribute('src'),'assets/lml-icon.png',selector);}
+ const banner=d.querySelector('.heritage-banner');const image=banner.querySelector('img');assert(image);assert.equal(image.getAttribute('src'),'assets/lml-wordmark.png');assert.equal(image.alt,'LML');assert.equal(banner.querySelector('.heritage-flag'),null);
+ assert(d.querySelector('.engine-choice[data-engine=shiro]').textContent.includes('شیر و خورشید'));
+ assert(!html.includes('emblem.png'));assert(!html.includes('lion-and-sun.svg'));
+ assert(!fs.existsSync(path.join(__dirname,'../app/emblem.png')));assert(!fs.existsSync(path.join(__dirname,'../app/assets/lion-and-sun.svg')));
+ assert(fs.existsSync(path.join(__dirname,'../app/assets/flags/de.svg')));
+ const css=fs.readFileSync(path.join(__dirname,'../app/style.css'),'utf8'),light=fs.readFileSync(path.join(__dirname,'../app/light-theme.css'),'utf8');
+ assert(css.includes('pasargadae-hero.png'));assert(light.includes('pasargadae-light.png'));assert(!css.includes('.heritage-flag'));assert(!light.includes('.heritage-flag'));
+ dom.window.close();
+});
+
+test('the ZedSecure credit click opens the exact requested repository through the real handler',async t=>{
+ const vm=require('node:vm'); const main=fs.readFileSync(path.join(__dirname,'../main.cjs'),'utf8');
+ const declaration=main.match(/const LINKS = Object\.freeze\(\{[\s\S]*?\}\);/)[0];
+ const handler=main.match(/case 'openLink': \{[^\n]+\}/)[0];let opened=[];
+ const invoke=vm.runInNewContext(declaration+`\n(async (method,data)=>{switch(method){${handler} default:throw new Error('unexpected')}})`,{shell:{openExternal:async url=>opened.push(url)}});
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close()); const {window}=dom;
+ window.scrollTo=()=>{};window.setInterval=()=>0;
+ const snap={settings:{engine:'shiro',systemProxy:false},shiro:{state:'disconnected',regions:[]},lantern:{state:'disconnected'}};
+ window.lml={platform:'windows',invoke:async(method,data)=>method==='snapshot'?snap:method==='openLink'?invoke(method,data):{items:[]}};
+ window.eval(js);await wait();window.document.querySelector('[data-nav=credits]').click();await wait();
+ const credit=window.document.querySelector('[data-link=creditZedsecure]');assert.equal(credit.textContent.trim(),'✦ZedSecure');credit.click();await wait();
+ assert.deepEqual(opened,['https://github.com/CluvexStudio/ZedSecure']);
+});
+
+test('search while an engine is active explains that verification is queued',async t=>{
+ const dom=new JSDOM(html,{runScripts:'outside-only',url:'https://app.local/'});t.after(()=>dom.window.close());const {window}=dom;
+ window.scrollTo=()=>{};window.setInterval=()=>0;let onConfigs;
+ const snap={settings:{engine:'shiro',systemProxy:true},shiro:{state:'connected',regions:[]},lantern:{state:'disconnected'}};
+ window.lml={platform:'windows',onConfigs:fn=>onConfigs=fn,invoke:async method=>method==='snapshot'?snap:{items:[]}};
+ window.eval(js);await wait();onConfigs({items:[],revision:10,scanRunning:true,refreshing:true,testsWaiting:true,note:'دریافت از تلگرام',scan:{id:2,found:5,tested:0}});
+ assert.match(window.document.querySelector('#config-note').textContent,/پس از قطع اتصال فعلی/);
 });

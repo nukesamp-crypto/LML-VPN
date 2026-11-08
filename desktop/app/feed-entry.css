@@ -18,3 +18,10 @@
 @media(max-width:1100px){.config-layout{grid-template-columns:minmax(0,1fr) minmax(260px,.85fr)}}@media(max-width:720px){.config-layout{grid-template-columns:1fr}}
 
 .config-scan-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.config-scan-actions .button{flex-shrink:0}
+
+/* Large scans render just one bounded page rather than thousands of nodes. */
+.config-pages{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:12px;color:#7b8f80;font-size:10px}
+.config-pages .button{padding:7px 12px;font-size:10px}
+.nav-coming{opacity:.62;cursor:not-allowed}.nav-coming:hover{background:transparent;color:inherit}.nav-coming small{margin-right:auto;white-space:nowrap;font-size:9px;color:#ad9364}
+.credits-note{color:#7d9082;font-size:12px;line-height:1.9;margin:0 0 18px;padding:12px 15px;border:1px solid #e4ece2;border-radius:12px;background:#f8fbf6}
+@media(max-width:720px){.nav-coming small{margin:0;font-size:8px}.nav-coming{gap:1px}}

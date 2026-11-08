@@ -45,7 +45,7 @@ test('every protocol has the same display name without changing its raw link, id
  const links=[vless,vmess,trojan,ss,xhttp];const ids=new Set();
  for(const raw of links){
   const c=parseLink(raw),before=buildXray(c,11111,11112),visible=publicEntry({...c,source:'@channel · وب'});
-  assert.equal(visible.name,'LML VPN');assert.equal(visible.id,c.id);assert.equal(c.raw,raw);assert.equal(visible.source,'LML');
+  assert.equal(visible.name,'LML VPN');assert.equal(visible.id,c.id);assert.equal(c.raw,raw);assert.equal(visible.source,'Google');
   assert.deepEqual(buildXray(c,11111,11112),before);assert(c.remark);ids.add(visible.id);
  }
  assert.equal(ids.size,links.length);

@@ -21,6 +21,7 @@
 
 /* Ancient-Iran visual identity: the original application icon remains intact. */
 .heritage-banner{min-height:166px;margin-bottom:16px;overflow:hidden;display:flex;align-items:center;padding:26px 29px;background-image:linear-gradient(270deg,rgba(7,15,23,.97),rgba(8,17,25,.88) 37%,rgba(7,15,23,.12) 100%),url('assets/pasargadae-hero.png');background-size:cover;background-position:center 49%;border-color:#5b4f3b;box-shadow:0 16px 45px #0004}
-.heritage-copy{max-width:400px}.heritage-copy span{font:700 9px/1.4 'Segoe UI',sans-serif;letter-spacing:1.8px;color:#d6b77b}.heritage-copy h2{font-size:20px;margin:8px 0 3px;color:#f1e4ca}.heritage-copy p{font-size:11px;color:#c8c4b8;margin:0}
+.heritage-lml{display:block;width:178px;max-width:38%;height:auto;flex:none}
+
 .sidebar{background:linear-gradient(180deg,#101923,#0a1119 80%);border-color:#4b4030}.channel-card{width:100%;border:1px solid #4d493a;background:linear-gradient(145deg,#1c2b2b,#111d25);padding:10px;border-radius:12px;display:flex;align-items:center;gap:8px;text-align:right}.channel-card:hover{border-color:#d4b373;background:#263537}.channel-icon{width:32px;height:32px;border-radius:9px;background:#293e3e;color:#b8d9c2;display:grid;place-items:center}.channel-icon svg{width:17px;height:17px}.channel-card b,.channel-card small{display:block}.channel-card b{font-size:11px;color:#e5d3af}.channel-card small{font-size:9px;color:#96a6a8}.channel-arrow{width:13px;height:13px;margin-right:auto;color:#c7ab76}.footer-channel{border:0;background:none;color:#c9ad7d;font-size:10px;padding:0}.footer-channel:hover{color:#f6d797}.main-footer{gap:12px;flex-wrap:wrap}
-@media(max-width:720px){.heritage-banner{min-height:130px;padding:18px}.heritage-copy h2{font-size:16px}.heritage-copy span{font-size:8px}}
+@media(max-width:720px){.heritage-banner{min-height:130px;padding:18px}.heritage-lml{width:146px;max-width:40%}}

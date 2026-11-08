@@ -12,7 +12,7 @@ html,body{background:var(--bg);color:var(--ink)}
 .window-controls button{color:#87958d}.window-controls button:hover{background:#e9eee7;color:#263b30}.window-controls button:last-child:hover{background:#d66e5c;color:#fff}
 .card{background:#fff;border:1px solid #e8ebe4;box-shadow:0 10px 30px #46614b0a,0 2px 5px #46614b07;border-radius:17px}
 .heritage-banner{min-height:152px;padding:24px 29px;background-image:linear-gradient(270deg,rgba(255,255,255,.97) 0%,rgba(255,255,255,.92) 33%,rgba(255,255,255,.24) 62%,rgba(255,255,255,0) 100%),url('assets/pasargadae-light.png');background-size:cover;background-position:center 52%;border-color:#eee9db;box-shadow:0 12px 35px #a98e5420}
-.heritage-copy span{color:#af8d53}.heritage-copy h2{color:#3b4b3d}.heritage-copy p{color:#87988b}
+
 .connect-card{min-height:414px;background:radial-gradient(ellipse at 50% 48%,#fcfaf0 0,transparent 47%),#fff}.connect-card:before{background-image:radial-gradient(#c7b17b .55px,transparent .55px);opacity:.1}
 .card-heading h2,.section-title h3{color:#34493b}.heading-spark{color:#b79859}.orbit-icon{background:#f7f8f3;border-color:#e8ede4;color:#a58a55}
 .halo{border-color:#e9eedf}.halo-mid{border-color:#e1e9d9}.halo-inner{border-color:#d7e2d0;box-shadow:0 0 35px #d9e7ce60,inset 0 0 18px #f2f6ec}

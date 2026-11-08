@@ -1,6 +1,9 @@
 ; LML's own Radiance service is installed with the application; no Lantern UI is launched.
 ; Installer runs per-machine (administrator required); the daemon secures its data directory.
 !macro customInstall
+  ; Remove artifacts of the abandoned direct-config TUN experiment, if present.
+  Delete "$INSTDIR\resources\bin\lml-tun-supervisor.exe"
+  Delete "$INSTDIR\resources\bin\wintun.dll"
   DetailPrint "Preparing the LML Lantern service owner..."
   nsExec::ExecToStack /TIMEOUT=30000 '"$INSTDIR\resources\bin\lml-lanternd.exe" owner'
   Pop $0

@@ -35,26 +35,60 @@ async function verifyCached(file,expected){
 }
 function freePort(){return new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});}
 function accepts(port){return new Promise(resolve=>{const s=net.connect({host:'127.0.0.1',port});const end=x=>{s.destroy();resolve(x);};s.setTimeout(250);s.once('connect',()=>end(true));s.once('error',()=>end(false));s.once('timeout',()=>end(false));});}
-function verifyThroughProxy(port,{host='www.cloudflare.com',timeout=12000,signal=null}={}){
-  // No secrets are sent to the test endpoint. The request is tunnelled all the
-  // way through the chosen server and authenticated HTTPS, not just to Xray's
-  // local listening socket. A failure is not proof that all destinations fail.
+// The primary test destination can be blocked even while a selected config
+// works. Race independent, TLS-authenticated HTTPS destinations within one
+// total time budget. No request is made directly to these hosts by the app.
+const VERIFY_TARGETS=Object.freeze([
+  Object.freeze({host:'www.cloudflare.com',path:'/cdn-cgi/trace'}),
+  Object.freeze({host:'www.google.com',path:'/generate_204'}),
+  Object.freeze({host:'www.microsoft.com',path:'/'})
+]);
+function verifyOne(port,{host,path:requestPath='/'},{timeout,signal}){
   return new Promise(resolve=>{
-    let done=false,secure=null,socket=null;
-    let req=null;const abort=()=>finish(false);
+    let done=false,secure=null,socket=null,req=null;
+    const abort=()=>finish(false);
     const finish=ok=>{if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);try{req?.destroy();}catch{}try{secure?.destroy();}catch{}try{socket?.destroy();}catch{}resolve(ok);};
-    const timer=setTimeout(()=>finish(false),timeout);timer.unref?.();
+    const timer=setTimeout(()=>finish(false),timeout);
     if(signal?.aborted)return finish(false);signal?.addEventListener('abort',abort,{once:true});
-    req=http.request({host:'127.0.0.1',port,method:'CONNECT',path:host+':443',headers:{Host:host+':443'},timeout},res=>{res.resume();finish(false);});
-    req.once('error',()=>finish(false));req.once('timeout',()=>{req.destroy();finish(false);});
-    req.once('connect',(res,s,head)=>{
-      socket=s;if(res.statusCode!==200)return finish(false);if(head?.length)s.unshift(head);
-      secure=tls.connect({socket:s,servername:host,rejectUnauthorized:true},()=>secure.write(`HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`));
-      let data='';secure.setEncoding('utf8');secure.on('data',chunk=>{data+=chunk;if(data.includes('\r\n'))finish(/^HTTP\/1\.[01] [1-5]\d\d/.test(data));});
-      secure.once('error',()=>finish(false));secure.once('end',()=>finish(false));
-    });req.end();
+    try{
+      req=http.request({host:'127.0.0.1',port,method:'CONNECT',path:host+':443',headers:{Host:host+':443'},timeout},res=>{res.resume();finish(false);});
+      req.once('error',()=>finish(false));req.once('timeout',()=>{req.destroy();finish(false);});
+      req.once('connect',(res,s,head)=>{
+        socket=s;if(res.statusCode!==200)return finish(false);if(head?.length)s.unshift(head);
+        secure=tls.connect({socket:s,servername:host,rejectUnauthorized:true},()=>secure.write(`HEAD ${requestPath} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`));
+        let data='';secure.setEncoding('utf8');secure.on('data',chunk=>{data+=chunk;if(data.includes('\r\n'))finish(/^HTTP\/1\.[01] [1-5]\d\d/.test(data));else if(data.length>2048)finish(false);});
+        secure.once('error',()=>finish(false));secure.once('end',()=>finish(false));
+      });req.end();
+    }catch{finish(false);}
   });
 }
+function verifyThroughProxy(port,{host,targets=host?[{host,path:'/'}]:VERIFY_TARGETS,timeout=12000,signal=null,stagger=250,attempt=verifyOne}={}){
+  if(signal?.aborted||!Array.isArray(targets)||!targets.length)return Promise.resolve(false);
+  const total=Math.max(1,Math.min(60000,Number(timeout)||12000));
+  const delay=Math.max(0,Math.min(1000,Number(stagger)||0));
+  const selected=targets.slice(0,3).filter(t=>typeof t?.host==='string'&&/^[a-z0-9.-]+$/i.test(t.host)&&typeof t.path==='string'&&/^\/[^\r\n]*$/.test(t.path));
+  if(!selected.length)return Promise.resolve(false);
+  return new Promise(resolve=>{
+    const controller=new AbortController(),timers=[];let done=false,completed=0;
+    const finish=ok=>{
+      if(done)return;done=true;clearTimeout(deadline);for(const t of timers)clearTimeout(t);
+      signal?.removeEventListener('abort',abort);controller.abort();resolve(ok);
+    };
+    const abort=()=>finish(false),deadline=setTimeout(()=>finish(false),total);
+    signal?.addEventListener('abort',abort,{once:true});
+    selected.forEach((target,i)=>{
+      const run=()=>{
+        if(done)return;
+        Promise.resolve().then(()=>attempt(port,target,{timeout:total,signal:controller.signal})).then(ok=>{
+          if(done)return;if(ok===true)return finish(true);
+          if(++completed===selected.length)finish(false);
+        },()=>{if(!done&&++completed===selected.length)finish(false);});
+      };
+      if(!i||!delay)run();else timers.push(setTimeout(run,i*delay));
+    });
+  });
+}
+
 class ConfigEngine {
   constructor({binDir,dataDir,proxy,onChange=()=>{},platform=process.platform,devBinary=null,verify=verifyThroughProxy}){
     this.binDir=binDir;this.work=path.join(dataDir,'config-engine');this.file=path.join(this.work,'session.json');
@@ -161,4 +195,4 @@ class ConfigEngine {
     await this.cleanup();this.set('disconnected','اتصال کانفیگ قطع است.',{httpPort:0,socksPort:0,tested:null,name:'',id:'',pingMs:null});return this.snapshot();
   }
 }
-module.exports={ConfigEngine,verifyCached,XRAY_SHA256,CRONET_SHA256,GEOIP_SHA256,GEOSITE_SHA256,freePort,verifyThroughProxy};
+module.exports={ConfigEngine,verifyCached,XRAY_SHA256,CRONET_SHA256,GEOIP_SHA256,GEOSITE_SHA256,freePort,verifyThroughProxy,VERIFY_TARGETS};

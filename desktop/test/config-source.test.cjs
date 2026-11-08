@@ -8,26 +8,26 @@ async function fixture(t,{fetchTelegram=async()=>[],dnsSource={fetch:async()=>[]
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'lml-config-source-'));const source=new ConfigSources({app:{getPath:()=>dir,isPackaged:false},binDir:()=>dir,fetchTelegram,dnsSource});
  t.after(async()=>{await source.stop();await fs.rm(dir,{recursive:true,force:true});});return source;
 }
-test('fetches web and DNS concurrently, caches privately, and exposes only freshly verified LML results',async t=>{
- let release,started;const gate=new Promise(r=>release=r),dnsStarted=new Promise(r=>started=r);
- const one=entry(1,'@'+CHANNELS[0]+' · وب'),two=entry(2,'@other · DNS/فید');
- const s=await fixture(t,{fetchTelegram:async name=>{await gate;return name===CHANNELS[0]?[one]:[];},dnsSource:{fetch:async()=>{started();return [{...one,source:'@'+CHANNELS[0]+' · DNS/فید'},two];},stop:async()=>{}}});
- const a=s.refresh();assert.strictEqual(s.refresh(),a);await dnsStarted;release();const result=await a;
- assert.equal(result.refreshing,false);assert.equal(result.candidateCount,2);assert.deepEqual(result.items,[]);
- assert(s.get(one.id).source.includes('DNS/فید'));assert(!JSON.stringify(result).includes('11111111-1111'));assert.equal(typeof s.addManual,'undefined');
- const cached=JSON.parse(await fs.readFile(s.file,'utf8'));assert.equal(cached.links.length,2);
+test('deduplicates simultaneous Google refreshes, caches privately, and exposes only freshly verified results',async t=>{
+ let release,started;const gate=new Promise(r=>release=r),begun=new Promise(r=>started=r);let dnsCalls=0;
+ const one=entry(1,'@'+CHANNELS[0]+' · Google'),two=entry(2,'@'+CHANNELS[1]+' · Google');
+ const s=await fixture(t,{fetchTelegram:async name=>{if(name===CHANNELS[0]){started();await gate;return [one];}return name===CHANNELS[1]?[two]:[];},dnsSource:{fetch:async()=>{dnsCalls++;return [one];},stop:async()=>{}}});
+ const a=s.refresh();assert.strictEqual(s.refresh(),a);await begun;release();const result=await a;
+ assert.equal(dnsCalls,0);assert.equal(result.refreshing,false);assert.equal(result.candidateCount,2);assert.deepEqual(result.items,[]);
+ assert(s.get(one.id).source.includes('Google'));assert(!JSON.stringify(result).includes('11111111-1111'));assert.equal(typeof s.addManual,'undefined');
+ const cached=JSON.parse(await fs.readFile(s.file,'utf8'));assert.equal(cached.source,'thefeed-google-mirror-v1');assert.equal(cached.links.length,2);
  mark(s,one.id,125.7);mark(s,two.id,30);assert.deepEqual(s.snapshot().items.map(x=>x.latency),[30,126]);
- assert(s.snapshot().items.every(x=>x.name==='LML VPN'&&x.source==='LML'));
+ assert(s.snapshot().items.every(x=>x.name==='LML VPN'&&x.source==='Google'));
  const again=await fixture(t);again.file=s.file;await again.load();assert.equal(again.snapshot().items.length,0);assert.equal(again.snapshot().stale,true);assert.equal(again.pendingIds().length,2);
  mark(again,one.id,61);assert.deepEqual(again.snapshot().items.map(x=>x.id),[one.id]);
 });
 test('network failure preserves a private cache and no manual entries or stale measurements are loaded',async t=>{
  const s=await fixture(t,{fetchTelegram:async()=>{throw Error('offline')}});
- await fs.writeFile(s.file,JSON.stringify({fetchedAt:Date.now(),latencies:{bogus:1},links:[{raw:link(1),source:'@channel · وب'},{raw:link(2),source:'ورودی دستی'}]}));await s.load();
+ await fs.writeFile(s.file,JSON.stringify({source:'thefeed-google-mirror-v1',fetchedAt:Date.now(),latencies:{bogus:1},links:[{raw:link(1),source:'@'+CHANNELS[0]+' · Google'},{raw:link(2),source:'ورودی دستی'}]}));await s.load();
  const r=await s.refresh();assert.equal(r.stale,true);assert.equal(r.items.length,0);assert.equal(r.candidateCount,1);assert(!r.refreshing);
  mark(s,entry(1,'').id,98);assert.equal(s.snapshot().items.length,1);
 });
-test('shutdown cancels an in-flight refresh without starting a later DNS child or overwriting cache',async t=>{
+test('shutdown cancels an in-flight Google refresh without starting a DNS child or overwriting cache',async t=>{
  let dnsCalls=0;const s=await fixture(t,{fetchTelegram:async()=>{throw Error('offline')},dnsSource:{fetch:async()=>{dnsCalls++;return [];},stop:async()=>{}}});
  const job=s.refresh();await s.stop();await job;assert.equal(dnsCalls,0);await assert.rejects(s.refresh(),/بسته/);
 });
@@ -43,34 +43,34 @@ test('active feed DNS is copied to an isolated list without changing the user pr
  assert(isolatedRequests.some(x=>x[1]==='/api/resolvers/lists/select'&&x[2].noScan));
 });
 
-test('DNS candidates remain represented when web sources exceed the private cap',async t=>{
- const web=Array.from({length:6100},(_,i)=>({...parseLink(`vless://11111111-1111-4111-8111-111111111111@node${i}.example.com:443#web${i}`),source:'@web · وب'}));
- const dns=entry(2,'@dns · DNS/فید');
- const s=await fixture(t,{fetchTelegram:async n=>n===CHANNELS[0]?web:[],dnsSource:{fetch:async()=>[dns],stop:async()=>{}}});
- const result=await s.refresh();assert.equal(result.candidateCount,6000);assert.equal(result.items.length,0);assert(s.get(dns.id),'DNS candidate retained');
- mark(s,dns.id,45);assert.deepEqual(s.snapshot().items.map(x=>x.id),[dns.id]);assert.equal(s.snapshot().items[0].source,'LML');
+test('every Google-mirrored channel remains represented when sources exceed the private cap',async t=>{
+ const s=await fixture(t,{fetchTelegram:async n=>{
+  const i=CHANNELS.indexOf(n);return Array.from({length:20},(_,j)=>({...parseLink(`vless://11111111-1111-4111-8111-111111111111@node${i}-${j}.example.com:443#node${i}-${j}`)}));
+ }});
+ let previousFound=0,maxStep=0;s.onChange=value=>{if(value.scan){maxStep=Math.max(maxStep,value.scan.found-previousFound);previousFound=value.scan.found;}};
+ const result=await s.refresh();assert.equal(result.candidateCount,6000);assert.equal(result.items.length,0);assert(maxStep<=100,`candidate count stepped by ${maxStep}`);
+ for(const n of CHANNELS)assert([...s.entries.values()].some(c=>c.source==='@'+n+' · Google'),'channel represented: '+n);
+ const first=[...s.entries.values()][0];mark(s,first.id,45);assert.deepEqual(s.snapshot().items.map(x=>x.id),[first.id]);assert.equal(s.snapshot().items[0].source,'Google');
 });
 
-test('a ping recorded while DNS is still fetching survives the merged list',async t=>{
- let resolveDns;const dnsWait=new Promise(r=>resolveDns=r),c=entry(1,'@web · وب');
- const s=await fixture(t,{fetchTelegram:async n=>n===CHANNELS[0]?[c]:[],dnsSource:{fetch:()=>dnsWait,stop:async()=>{}}});
- const job=s.refresh();for(let i=0;i<20&&!s.snapshot().candidateCount;i++)await new Promise(r=>setTimeout(r,5));
- mark(s,c.id,71);resolveDns([entry(2,'@dns · DNS/فید')]);const result=await job;
- assert.equal(result.items.find(x=>x.id===c.id).latency,71);
+test('a ping recorded while later Google channels are still fetching survives the merged list',async t=>{
+ let resolve,started;const gate=new Promise(r=>resolve=r),second=new Promise(r=>started=r),c=entry(1,'@'+CHANNELS[0]+' · Google');
+ const s=await fixture(t,{fetchTelegram:async n=>{if(n===CHANNELS[0])return [c];if(n===CHANNELS[1]){started();await gate;return [entry(2,'@'+n+' · Google')];}return [];}});
+ const job=s.refresh();await second;assert(s.get(c.id));mark(s,c.id,71);resolve();const result=await job;
+ assert.equal(result.items.find(x=>x.id===c.id).latency,71);assert.equal(result.candidateCount,2);
 });
 
-test('200 Telegram sources are visited with bounded concurrency and fair candidate representation',async t=>{
- assert.equal(CHANNELS.length,200);assert.equal(new Set(CHANNELS.map(n=>n.toLowerCase())).size,200);
- let running=0,maxRunning=0;const seen=[];
+test('400 Google-mirrored Telegram channels are visited in order with sequential concurrency and fair representation',async t=>{
+ assert.equal(CHANNELS.length,400);assert.equal(new Set(CHANNELS.map(n=>n.toLowerCase())).size,400);
+ let running=0,maxRunning=0,dnsCalls=0;const seen=[];
  const s=await fixture(t,{fetchTelegram:async name=>{
   running++;maxRunning=Math.max(maxRunning,running);seen.push(name);await new Promise(r=>setTimeout(r,2));running--;
   const i=CHANNELS.indexOf(name);
-  return Array.from({length:9},(_,j)=>({...parseLink(`vless://11111111-1111-4111-8111-111111111111@node${i}-${j}.example.com:443#channel${i}-${j}`),source:'@'+name+' · وب'}));
- },dnsSource:{fetch:async()=>[entry(1,'@feed · DNS/فید')],stop:async()=>{}}});
- const r=await s.refresh();assert.equal(seen.length,200);assert(maxRunning<=8);assert.equal(r.candidateCount,1801);assert.equal(r.items.length,0);
+  return Array.from({length:9},(_,j)=>({...parseLink(`vless://11111111-1111-4111-8111-111111111111@node${i}-${j}.example.com:443#channel${i}-${j}`)}));
+ },dnsSource:{fetch:async()=>{dnsCalls++;return [entry(1,'@feed · DNS/فید')];},stop:async()=>{}}});
+ const r=await s.refresh();assert.deepEqual(seen,CHANNELS);assert.equal(maxRunning,1);assert.equal(dnsCalls,0);assert.equal(r.candidateCount,3600);assert.equal(r.items.length,0);
  const represented=new Set([...s.entries.values()].map(x=>x.source));
- for(const channel of CHANNELS)assert(represented.has('@'+channel+' · وب'),channel);
- assert(represented.has('@feed · DNS/فید'));
+ for(const channel of CHANNELS)assert(represented.has('@'+channel+' · Google'),channel);
 });
 
 test('single deletion works before any ping, bulk deletion removes only failures and persists',async t=>{
@@ -116,7 +116,7 @@ test('branding, raw identity, sorting and cache re-testing remain correct across
  let result=await s.refresh();assert.equal(result.items.length,0);assert.equal(result.candidateCount,2);
  assert.equal(s.get(a.id).raw,rawA);assert.equal(s.get(a.id).remark,'🇩🇪 First');assert.equal(s.get(b.id).raw,rawB);
  mark(s,a.id,123);mark(s,b.id,77);result=s.snapshot();assert.deepEqual(result.items.map(x=>x.latency),[77,123]);
- assert(result.items.every(item=>item.name==='LML VPN'&&item.source==='LML'));
+ assert(result.items.every(item=>item.name==='LML VPN'&&item.source==='Google'));
  assert.deepEqual(result.items.map(x=>x.countryCode),['NL','DE']);assert(result.items.every(x=>x.countrySource==='label'));
  const saved=JSON.parse(await fs.readFile(s.file,'utf8'));assert.deepEqual(saved.links.map(x=>x.raw),[rawA,rawB]);
  const again=await fixture(t);again.file=s.file;await again.load();assert.equal(again.snapshot().items.length,0);assert.equal(again.pendingIds().length,2);
@@ -134,7 +134,7 @@ test('the public result cap is 1000 and selects the lowest measured latencies, n
  }
  const result=s.snapshot();assert.equal(result.candidateCount,1205);assert.equal(result.items.length,1000);
  assert.equal(result.items[0].latency,2);assert.equal(result.items.at(-1).latency,1001);
- assert(result.items.every((x,i,a)=>x.source==='LML'&&x.name==='LML VPN'&&(i===0||a[i-1].latency<=x.latency)));
+ assert(result.items.every((x,i,a)=>x.source==='Google'&&x.name==='LML VPN'&&(i===0||a[i-1].latency<=x.latency)));
  assert.equal(s.pendingIds().length,2);
 });
 test('a successful result retains the pinned public address for its eventual connection, and refresh invalidates it',async t=>{
@@ -176,20 +176,20 @@ test('stopping during DNS polling wakes its delay immediately',async t=>{
  const start=Date.now();await source.cancel();await rejected;assert(Date.now()-start<500,'polling delay was interrupted');
 });
 
-test('stop cancels Telegram and DNS, retains verified partial results, ignores late candidates and can restart',async t=>{
- const good=entry(1,'@early · وب'),late=entry(2,'@late · وب'),fresh=entry(3,'@fresh · وب');
- let stage=0,started=0,dnsStarted,signalled;const dnsReady=new Promise(r=>dnsStarted=r),firstReady=new Promise(r=>signalled=r);let dnsCancels=0;
+test('stop cancels the Google scan, retains verified partial results, ignores late candidates and can restart',async t=>{
+ const good=entry(1,'@'+CHANNELS[0]+' · Google'),late=entry(2,'@late · Google'),fresh=entry(3,'@fresh · Google');
+ let stage=0,started=0,signalled,secondStarted,dnsCalls=0;const secondReady=new Promise(r=>secondStarted=r),firstReady=new Promise(r=>signalled=r);
  const abortResult=(signal,value)=>new Promise(resolve=>{if(signal.aborted)return resolve(value);signal.addEventListener('abort',()=>resolve(value),{once:true});});
- const dnsSource={fetch:({signal})=>{dnsStarted();return stage===0?abortResult(signal,[late]):Promise.resolve([]);},cancel:async()=>{dnsCancels++;},stop:async()=>{}};
+ const dnsSource={fetch:async()=>{dnsCalls++;return [late];},cancel:async()=>{dnsCalls++;},stop:async()=>{dnsCalls++;}};
  const s=await fixture(t,{dnsSource,fetchTelegram:async(name,{signal})=>{
   started++;if(stage===1)return name===CHANNELS[0]?[fresh]:[];
   if(name===CHANNELS[0]){signalled();return [good];}
-  return abortResult(signal,[late]);
+  secondStarted();return abortResult(signal,[late]);
  }});
- const job=s.refresh();await Promise.all([firstReady,dnsReady]);
+ const job=s.refresh();await Promise.all([firstReady,secondReady]);
  for(let i=0;i<50&&!s.get(good.id);i++)await new Promise(r=>setTimeout(r,2));assert(s.get(good.id));mark(s,good.id,39);
- await s.cancelRefresh();await job;assert.equal(dnsCancels,1);assert(started<200);assert(!s.get(late.id),'aborted late result must not be merged');
- assert.deepEqual(s.snapshot().items.map(x=>x.id),[good.id]);assert.equal(s.snapshot().refreshing,false);assert.match(s.snapshot().note,/متوقف/);
+ await s.cancelRefresh();await job;assert.equal(dnsCalls,0);assert(started<400);assert(!s.get(late.id),'aborted late result must not be merged');
+ assert.deepEqual(s.snapshot().items.map(x=>x.id),[good.id]);assert.equal(s.snapshot().refreshing,false);assert.match(s.snapshot().note,/متوقف/);assert.equal(s.snapshot().scan.stopped,true);assert.equal(s.snapshot().scan.tested,1);assert(s.snapshot().scan.channelsDone<400);
  assert((JSON.parse(await fs.readFile(s.file,'utf8'))).links.some(x=>x.raw===good.raw),'partial work is persisted');
  stage=1;const restarted=await s.refresh();assert(s.get(fresh.id));assert.equal(restarted.items.length,0,'new session re-tests prior results');assert.equal(s.closed,false);
 });

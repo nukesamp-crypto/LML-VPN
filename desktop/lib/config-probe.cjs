@@ -6,7 +6,14 @@ const net=require('node:net');
 const dns=require('node:dns/promises');
 const {performance}=require('node:perf_hooks');
 const {ConfigEngine,verifyThroughProxy}=require('./config-engine.cjs');
-const MAX_CONFIGS=6000, CONCURRENCY=6;
+// Xray plus its TLS stack is memory-heavy on Windows. A small pool and
+// a short yield between children avoid bursts that freeze or kill the UI.
+const MAX_CONFIGS=6000, CONCURRENCY=2, WORKER_YIELD_MS=75;
+function workerYield(ms,signal){return new Promise(resolve=>{
+ if(!ms||signal?.aborted)return resolve();let done=false;
+ const end=()=>{if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',end);resolve();};
+ const timer=setTimeout(end,ms);signal?.addEventListener('abort',end,{once:true});
+});}
 
 // Public Telegram text is untrusted. Resolve the configured server before
 // starting Xray, reject local/reserved destinations and pin the tested address
@@ -59,8 +66,9 @@ class PublicResolver {
  }
 }
 class ConfigProbe {
- constructor({binDir,dataDir,sources,devBinary=null,onChange=()=>{},verify=verifyThroughProxy,resolver=new PublicResolver()}){
+ constructor({binDir,dataDir,sources,devBinary=null,onChange=()=>{},verify=verifyThroughProxy,resolver=new PublicResolver(),engineFactory=null,workerYieldMs=WORKER_YIELD_MS}){
   this.binDir=binDir;this.dataDir=dataDir;this.sources=sources;this.devBinary=devBinary;this.onChange=onChange;this.verify=verify;this.resolver=resolver;
+  this.engineFactory=engineFactory||((opts)=>new ConfigEngine(opts));this.workerYieldMs=Math.min(1000,Math.max(0,Number(workerYieldMs)||0));
   this.job=null;this.engines=new Set();this.generation=0;this.aborter=null;this.state={running:false,done:0,total:0};
  }
  snapshot(){return {...this.state};}
@@ -84,11 +92,12 @@ class ConfigProbe {
      const address=await this.resolver.address(c.address,signal);if(gen!==this.generation)break;
      prepared=pinCandidate(c,address);
      // Each worker has its own session file; no registry/system proxy changes.
-     e=new ConfigEngine({binDir:this.binDir,dataDir:path.join(this.dataDir,`probe-${slot}`),devBinary:this.devBinary,proxy:{activate:async()=>{},restore:async()=>{}}});this.engines.add(e);
+     e=this.engineFactory({binDir:this.binDir,dataDir:path.join(this.dataDir,`probe-${slot}`),devBinary:this.devBinary,proxy:{activate:async()=>{},restore:async()=>{}}});this.engines.add(e);
      const st=await e.start(prepared,{systemProxy:false,probe:false,fastProbe:true});if(gen!==this.generation)break;
      const now=performance.now(),ok=await this.verify(st.httpPort,{timeout:8000,signal});if(ok)ms=performance.now()-now;
     }catch{}finally{if(e){await e.stop().catch(()=>{});this.engines.delete(e);}}
     if(gen!==this.generation)break;this.sources.setLatency(id,ms,ms>=0?prepared:null);this.set({done:++done});
+    await workerYield(this.workerYieldMs,signal);
    }
   };
   try{await Promise.all(Array.from({length:Math.min(CONCURRENCY,list.length)},(_,i)=>worker(i)));}
@@ -100,4 +109,4 @@ class ConfigProbe {
   if(job)await job.catch(()=>{});this.set({running:false});
  }
 }
-module.exports={ConfigProbe,PublicResolver,isPublicIP,pinCandidate,MAX_CONFIGS,CONCURRENCY};
+module.exports={ConfigProbe,PublicResolver,isPublicIP,pinCandidate,MAX_CONFIGS,CONCURRENCY,WORKER_YIELD_MS};

@@ -2,10 +2,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path'),crypto=require('node:crypto');
 const {configureHelper,helperRequest}=require('../lib/lantern.cjs');
 const bin=path.join(__dirname,'..','resources','bin');
-test('bundled Lantern daemon and helper match the working public Windows build',{skip:!require('node:fs').existsSync(path.join(bin,'lml-lanternd.exe'))},async()=>{
+test('bundled Lantern daemon and rebuilt helper match this release’s recorded hashes',{skip:!require('node:fs').existsSync(path.join(bin,'lml-lanternd.exe'))},async()=>{
  const sha=async p=>crypto.createHash('sha256').update(await fs.readFile(p)).digest('hex');
  assert.equal(await sha(path.join(bin,'lml-lanternd.exe')),'111e8c510d805de28a92524376fb67064486319261b78395f80b64ff2777b8f0');
- assert.equal(await sha(path.join(bin,'lantern-ipc.exe')),'f6ff55cf79dfe3824213d4d4a5e3b0f34f37be0c2e51c6d51b0a865752a33ef7');
+ assert.equal(await sha(path.join(bin,'lantern-ipc.exe')),'7f1b089eebca30a6af943dac48985d7c9185ed51e233ee0e04f4cc53478d4c77');
  const contents=await fs.readFile(path.join(bin,'lml-lanternd.exe'));
  assert(contents.includes(Buffer.from('build\t-tags=with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api')));
 });

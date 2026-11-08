@@ -15,9 +15,9 @@ function setup({refreshLantern=async()=>({state:'disconnected'})}={}){
  const probe={job:null,snapshot:()=>({running:false,done:0,total:0})};
  const auto={enabled:false,paused:false,async pause(){this.paused=true;},resume(){this.paused=false;},enable(){this.enabled=true;},async disable(){stats.disabled++;this.enabled=false;}};
  const context={configSources:sources,configProbe:probe,autoProbe:auto,connectionGuard:guard,refreshLantern,
-  anyConfigActive:()=>false,psiphonProcess:null,lanternConnectJob:null,lanternStopping:false};
+  anyConfigActive:()=>false,psiphonProcess:null,lanternConnectJob:null,lanternStopping:false,lanternState:{state:'disconnected'}};
  vm.runInNewContext(declarations+'\n'+implementation+'\nglobalThis.invoke=invoke;globalThis.configView=configView;',context);
- return {...context,guard,sources,probe,auto,stats};
+ return {...context,context,guard,sources,probe,auto,stats};
 }
 test('stop during preflight invalidates the pending scan without ever fetching, then restart works',async()=>{
  const gate=deferred(),entered=deferred();let checks=0;
@@ -42,4 +42,10 @@ test('stop during an active scan leaves an unrelated subsequent connection inten
  const unrelated=h.guard.run(async check=>{await gate.promise;check();connected=true;});
  const stopped=await h.invoke('configsTestStop');assert.equal(stopped.configs.scanRunning,false);
  gate.resolve();await unrelated;assert.equal(connected,true);assert.equal(h.stats.cancel,1);
+});
+
+test('Telegram acquisition can start with an engine active; probe remains queued until disconnection',async()=>{
+ const h=setup({refreshLantern:async()=>({state:'connected'})});h.context.psiphonProcess={pid:1};h.context.lanternState={state:'connected'};
+ const view=await h.invoke('configsRefresh');assert.equal(h.stats.fetch,1);assert.equal(view.refreshing,true);assert.equal(h.auto.enabled,true);assert.equal(view.testsWaiting,true);
+ const stopped=await h.invoke('configsTestStop');assert.equal(stopped.configs.scanRunning,false);
 });
